@@ -6,3 +6,4 @@ pub mod artifacts;
 pub mod config;
 pub mod calendar;
 pub mod speech;
+pub mod deploy;

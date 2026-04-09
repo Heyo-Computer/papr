@@ -109,6 +109,8 @@ pub struct StatusInfo {
     pub agent_error: Option<String>,
     pub sandbox_error: Option<String>,
     pub log_file: String,
+    pub agent_mode: String,
+    pub deploy_url: Option<String>,
 }
 
 #[tauri::command]
@@ -156,6 +158,16 @@ pub async fn get_status_info(state: State<'_, AppState>) -> Result<StatusInfo, S
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    let agent_mode = {
+        let mode = state.agent_mode.lock().unwrap().clone();
+        match mode {
+            crate::state::AgentMode::Local => "local",
+            crate::state::AgentMode::Deployed => "deployed",
+            crate::state::AgentMode::Remote => "remote",
+        }.to_string()
+    };
+    let deploy_url = state.deploy_url.lock().unwrap().clone();
+
     Ok(StatusInfo {
         agent_status,
         sandbox_status,
@@ -166,6 +178,8 @@ pub async fn get_status_info(state: State<'_, AppState>) -> Result<StatusInfo, S
         agent_error,
         sandbox_error,
         log_file,
+        agent_mode,
+        deploy_url,
     })
 }
 

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { DayEntry, TodoItem, AgentMessage, Artifact, Theme, AgentConfig, StatusInfo, CalendarConfig, CalendarStatus, CalendarEvent } from "../types";
+import type { DayEntry, TodoItem, AgentMessage, Artifact, Theme, AgentConfig, StatusInfo, CalendarConfig, CalendarStatus, CalendarEvent, DeploymentInfo } from "../types";
 
 // Storage commands
 export async function loadDay(date: string): Promise<DayEntry> {
@@ -140,7 +140,41 @@ export async function syncCalendarToTodos(): Promise<string> {
   return invoke("sync_calendar_to_todos");
 }
 
+// Month range
+export async function getMonthRange(): Promise<DayEntry[]> {
+  return invoke("get_month_range");
+}
+
 // Speech commands
 export async function transcribeAudio(audioData: string, mediaType: string): Promise<string> {
   return invoke("transcribe_audio", { audioData, mediaType });
+}
+
+export async function transcribeFile(filePath: string): Promise<string> {
+  return invoke("transcribe_file", { filePath });
+}
+
+export async function speakText(text: string): Promise<string> {
+  return invoke("speak_text", { text });
+}
+
+// Deploy commands
+export async function deployAgent(): Promise<string> {
+  return invoke("deploy_agent");
+}
+
+export async function connectRemote(url: string): Promise<string> {
+  return invoke("connect_remote", { url });
+}
+
+export async function disconnectRemote(): Promise<void> {
+  return invoke("disconnect_remote");
+}
+
+export async function teardownDeploy(): Promise<void> {
+  return invoke("teardown_deploy");
+}
+
+export async function getDeploymentInfo(): Promise<DeploymentInfo> {
+  return invoke("get_deployment_info");
 }

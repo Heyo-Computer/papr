@@ -1,19 +1,21 @@
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { useTheme } from "./theme/ThemeProvider";
 import { useRef, useCallback, useEffect } from "preact/hooks";
-import { activeTab, agentStatus, settingsOpen, agentName, statusPopoverOpen } from "./state/store";
-import { DayAccordion } from "./components/days/DayAccordion";
+import { activeTab, agentStatus, agentMode, settingsOpen, agentName, statusPopoverOpen, days } from "./state/store";
+import { WeekAccordion } from "./components/days/DayAccordion";
+import { MonthAccordion } from "./components/days/MonthAccordion";
 import { ArtifactsPanel } from "./components/artifacts/ArtifactsPanel";
 import { ChatWindow } from "./components/chat/ChatWindow";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { StatusPopover } from "./components/status/StatusPopover";
 import { setupEventListeners } from "./api/events";
-import { getAgentStatus } from "./api/commands";
+import { getAgentStatus, getDaysRange } from "./api/commands";
 import type { ViewTab, AgentStatus } from "./types";
 import { signal } from "@preact/signals";
 
 const tabs: { id: ViewTab; label: string }[] = [
-  { id: "days", label: "Days" },
+  { id: "week", label: "Week" },
+  { id: "month", label: "Month" },
   { id: "artifacts", label: "Artifacts" },
 ];
 
@@ -31,6 +33,15 @@ function AppShell() {
     getAgentStatus().then((s) => {
       agentStatus.value = s as AgentStatus;
     }).catch(() => {});
+
+    // Re-fetch data on window focus when in deployed/remote mode (multi-device sync)
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible" && agentMode.value !== "local") {
+        getDaysRange().then((d) => { days.value = d; }).catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, []);
 
   const onMouseDown = useCallback((e: MouseEvent) => {
@@ -117,7 +128,8 @@ function AppShell() {
 
       {/* Scrollable content area */}
       <div class="content-area" style={contentStyle}>
-        {activeTab.value === "days" && <DayAccordion />}
+        {activeTab.value === "week" && <WeekAccordion />}
+        {activeTab.value === "month" && <MonthAccordion />}
         {activeTab.value === "artifacts" && <ArtifactsPanel />}
       </div>
 

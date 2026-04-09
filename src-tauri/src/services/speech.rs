@@ -1,7 +1,7 @@
 use crate::logging;
 use base64::Engine;
 
-/// Transcribe audio using the OpenAI Whisper API.
+/// Transcribe audio using the Mistral Voxtral API.
 /// Accepts base64-encoded audio data and a MIME type (e.g. "audio/webm").
 pub async fn transcribe(api_key: &str, audio_base64: &str, media_type: &str) -> Result<String, String> {
     logging::info(&format!("speech::transcribe: media_type={}, audio_len={}", media_type, audio_base64.len()));
@@ -27,34 +27,126 @@ pub async fn transcribe(api_key: &str, audio_base64: &str, media_type: &str) -> 
         .map_err(|e| format!("Failed to create multipart: {}", e))?;
 
     let form = reqwest::multipart::Form::new()
-        .text("model", "whisper-1")
+        .text("model", "voxtral-mini-latest")
         .part("file", file_part);
 
     let client = reqwest::Client::new();
     let resp = client
-        .post("https://api.openai.com/v1/audio/transcriptions")
+        .post("https://api.mistral.ai/v1/audio/transcriptions")
         .header("Authorization", format!("Bearer {}", api_key))
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("Whisper API request failed: {}", e))?;
+        .map_err(|e| format!("Voxtral API request failed: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        let msg = format!("Whisper API error ({}): {}", status, text);
+        let msg = format!("Voxtral API error ({}): {}", status, text);
         logging::error(&msg);
         return Err(msg);
     }
 
     #[derive(serde::Deserialize)]
-    struct WhisperResponse {
+    struct VoxtralResponse {
         text: String,
     }
 
-    let data: WhisperResponse = resp.json().await
-        .map_err(|e| format!("Failed to parse Whisper response: {}", e))?;
+    let data: VoxtralResponse = resp.json().await
+        .map_err(|e| format!("Failed to parse Voxtral response: {}", e))?;
 
     logging::info(&format!("speech::transcribe: result='{}' ({} chars)", &data.text[..data.text.len().min(80)], data.text.len()));
     Ok(data.text)
+}
+
+/// Transcribe a WAV file from disk.
+pub async fn transcribe_file(api_key: &str, file_path: &str) -> Result<String, String> {
+    logging::info(&format!("speech::transcribe_file: path={}", file_path));
+
+    let audio_bytes = std::fs::read(file_path)
+        .map_err(|e| format!("Failed to read audio file: {}", e))?;
+
+    logging::info(&format!("speech::transcribe_file: read {} bytes", audio_bytes.len()));
+
+    if audio_bytes.is_empty() {
+        return Err("Recording file is empty — no audio was captured.".to_string());
+    }
+
+    let file_part = reqwest::multipart::Part::bytes(audio_bytes)
+        .file_name("recording.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| format!("Failed to create multipart: {}", e))?;
+
+    let form = reqwest::multipart::Form::new()
+        .text("model", "voxtral-mini-latest")
+        .part("file", file_part);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://api.mistral.ai/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Voxtral API request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let msg = format!("Voxtral API error ({}): {}", status, text);
+        logging::error(&msg);
+        return Err(msg);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct VoxtralResponse {
+        text: String,
+    }
+
+    let data: VoxtralResponse = resp.json().await
+        .map_err(|e| format!("Failed to parse Voxtral response: {}", e))?;
+
+    logging::info(&format!("speech::transcribe_file: result='{}' ({} chars)", &data.text[..data.text.len().min(80)], data.text.len()));
+    Ok(data.text)
+}
+
+/// Text-to-speech using the Mistral Voxtral TTS API. Returns base64-encoded audio.
+pub async fn text_to_speech(api_key: &str, text: &str) -> Result<String, String> {
+    logging::info(&format!("speech::tts: {} chars", text.len()));
+
+    let body = serde_json::json!({
+        "model": "voxtral-mini-tts-2603",
+        "input": text,
+        "voice": "en_paul_neutral",
+        "response_format": "wav",
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("https://api.mistral.ai/v1/audio/speech")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Voxtral TTS request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        let msg = format!("Voxtral TTS error ({}): {}", status, text);
+        logging::error(&msg);
+        return Err(msg);
+    }
+
+    #[derive(serde::Deserialize)]
+    struct TtsResponse {
+        audio_data: String,
+    }
+
+    let data: TtsResponse = resp.json().await
+        .map_err(|e| format!("Failed to parse Voxtral TTS response: {}", e))?;
+
+    logging::info(&format!("speech::tts: got {} bytes base64 audio", data.audio_data.len()));
+    Ok(data.audio_data)
 }

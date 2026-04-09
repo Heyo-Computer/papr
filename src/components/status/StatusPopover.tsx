@@ -1,6 +1,10 @@
 import { useState, useEffect } from "preact/hooks";
-import { statusPopoverOpen, agentStatus } from "../../state/store";
-import { getStatusInfo, stopVm, setupAgent, startAgent, stopAgent, getRecentLogs, getCalendarStatus, syncCalendarToTodos } from "../../api/commands";
+import { statusPopoverOpen, agentStatus, agentMode, deployUrl } from "../../state/store";
+import {
+  getStatusInfo, stopVm, setupAgent, startAgent, stopAgent, getRecentLogs,
+  getCalendarStatus, syncCalendarToTodos,
+  deployAgent, connectRemote, disconnectRemote, teardownDeploy,
+} from "../../api/commands";
 import { listen } from "@tauri-apps/api/event";
 import type { StatusInfo, CalendarStatus } from "../../types";
 
@@ -23,22 +27,44 @@ function Row({ label, value, status }: { label: string; value: string; status?: 
   );
 }
 
+function ModeLabel({ mode }: { mode: string }) {
+  const label = mode === "deployed" ? "Deployed" : mode === "remote" ? "Remote" : "Local";
+  const cls = mode === "local" ? "disconnected" : "running";
+  return (
+    <div class="status-row">
+      <StatusDot status={cls} />
+      <span class="status-row-label">Mode</span>
+      <span class="status-row-value">{label}</span>
+    </div>
+  );
+}
+
 export function StatusPopover() {
   const [info, setInfo] = useState<StatusInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [setupRunning, setSetupRunning] = useState(false);
   const [setupProgress, setSetupProgress] = useState("");
+  const [deployRunning, setDeployRunning] = useState(false);
+  const [deployProgress, setDeployProgress] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [showLogs, setShowLogs] = useState(false);
   const [logContent, setLogContent] = useState("");
   const [calStatus, setCalStatus] = useState<CalendarStatus | null>(null);
   const [calSyncing, setCalSyncing] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState("");
+  const [connectingRemote, setConnectingRemote] = useState(false);
+  const [showConnect, setShowConnect] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   function refresh() {
     setLoading(true);
     setActionMsg("");
     getStatusInfo()
-      .then(setInfo)
+      .then((si) => {
+        setInfo(si);
+        agentMode.value = si.agent_mode;
+        deployUrl.value = si.deploy_url;
+      })
       .catch(() => setInfo(null))
       .finally(() => setLoading(false));
   }
@@ -47,6 +73,7 @@ export function StatusPopover() {
     if (statusPopoverOpen.value) {
       refresh();
       setShowLogs(false);
+      setCopied(false);
       getCalendarStatus()
         .then(setCalStatus)
         .catch(() => setCalStatus(null));
@@ -54,11 +81,15 @@ export function StatusPopover() {
   }, [statusPopoverOpen.value]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlisten1: (() => void) | undefined;
+    let unlisten2: (() => void) | undefined;
     listen<string>("setup-progress", (e) => {
       setSetupProgress(e.payload);
-    }).then((fn) => { unlisten = fn; });
-    return () => { unlisten?.(); };
+    }).then((fn) => { unlisten1 = fn; });
+    listen<string>("deploy-progress", (e) => {
+      setDeployProgress(e.payload);
+    }).then((fn) => { unlisten2 = fn; });
+    return () => { unlisten1?.(); unlisten2?.(); };
   }, []);
 
   function loadLogs() {
@@ -77,6 +108,8 @@ export function StatusPopover() {
     statusPopoverOpen.value = false;
   }
 
+  // ── Local mode handlers ──
+
   async function handleFullSetup() {
     setSetupRunning(true);
     setSetupProgress("Starting setup...");
@@ -90,7 +123,6 @@ export function StatusPopover() {
     } catch (e) {
       setActionMsg(`Setup failed: ${e}`);
       agentStatus.value = "error";
-      // Auto-show logs on failure
       setShowLogs(true);
       loadLogs();
     } finally {
@@ -136,6 +168,96 @@ export function StatusPopover() {
     }
   }
 
+  // ── Deploy handlers ──
+
+  async function handleDeploy() {
+    setDeployRunning(true);
+    setDeployProgress("Starting deployment...");
+    setActionMsg("");
+    agentStatus.value = "starting";
+    try {
+      const url = await deployAgent();
+      setActionMsg(`Deployed at ${url}`);
+      agentStatus.value = "running";
+      agentMode.value = "deployed";
+      deployUrl.value = url;
+      refresh();
+    } catch (e) {
+      setActionMsg(`Deploy failed: ${e}`);
+      agentStatus.value = "error";
+      setShowLogs(true);
+      loadLogs();
+    } finally {
+      setDeployRunning(false);
+      setDeployProgress("");
+    }
+  }
+
+  async function handleTeardown() {
+    setActionMsg("");
+    try {
+      await teardownDeploy();
+      setActionMsg("Deployment stopped");
+      agentStatus.value = "disconnected";
+      agentMode.value = "local";
+      deployUrl.value = null;
+      refresh();
+    } catch (e) {
+      setActionMsg(`Error: ${e}`);
+    }
+  }
+
+  // ── Remote connect handlers ──
+
+  async function handleConnect() {
+    if (!remoteUrl.trim()) return;
+    setConnectingRemote(true);
+    setActionMsg("");
+    agentStatus.value = "starting";
+    try {
+      const msg = await connectRemote(remoteUrl.trim());
+      setActionMsg(msg);
+      agentStatus.value = "running";
+      agentMode.value = "remote";
+      deployUrl.value = remoteUrl.trim();
+      setRemoteUrl("");
+      setShowConnect(false);
+      refresh();
+    } catch (e) {
+      setActionMsg(`Connect failed: ${e}`);
+      agentStatus.value = "error";
+    } finally {
+      setConnectingRemote(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setActionMsg("");
+    try {
+      await disconnectRemote();
+      setActionMsg("Disconnected");
+      agentStatus.value = "disconnected";
+      agentMode.value = "local";
+      deployUrl.value = null;
+      refresh();
+    } catch (e) {
+      setActionMsg(`Error: ${e}`);
+    }
+  }
+
+  async function handleCopyUrl() {
+    const url = info?.deploy_url || deployUrl.value;
+    if (url) {
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch {
+        setActionMsg("Failed to copy URL");
+      }
+    }
+  }
+
   async function handleCalendarSync() {
     setCalSyncing(true);
     setActionMsg("");
@@ -149,9 +271,13 @@ export function StatusPopover() {
     }
   }
 
+  const mode = info?.agent_mode || agentMode.value;
+  const currentDeployUrl = info?.deploy_url || deployUrl.value;
   const needsSetup = info && info.sandbox_status === "not_created";
   const sandboxStopped = info && info.sandbox_status === "stopped";
-
+  const isLocal = mode === "local";
+  const isDeployed = mode === "deployed";
+  const isRemote = mode === "remote";
   return (
     <div class="status-popover-overlay" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
       <div class="status-popover">
@@ -172,75 +298,182 @@ export function StatusPopover() {
 
         {info && (
           <div class="status-popover-body">
+            {/* Agent & mode status */}
             <Row label="Agent" value={info.agent_status} status={info.agent_status} />
             {info.agent_error && <div class="status-error">{info.agent_error}</div>}
+            <ModeLabel mode={mode} />
 
-            <Row label="Sandbox" value={info.sandbox_status} status={
-              info.sandbox_status === "running" ? "running" :
-              info.sandbox_status === "stopped" ? "disconnected" :
-              info.sandbox_status === "not_created" ? "disconnected" : "error"
-            } />
-            <Row label="Name" value={info.sandbox_name} />
-            {info.sandbox_error && <div class="status-error">{info.sandbox_error}</div>}
-
-            <div class="status-divider" />
-            <Row label="heyvm" value={info.heyvm_available ? "available" : "not found"} status={info.heyvm_available ? "running" : "error"} />
-            <Row label="Data dir" value={info.data_dir} status={info.data_dir_exists ? "running" : "error"} />
-
-            {/* Setup progress */}
-            {setupRunning && (
-              <div class="setup-progress">
-                <div class="setup-progress-spinner" />
-                <span>{setupProgress}</span>
-              </div>
-            )}
-
-            {!setupRunning && info.heyvm_available && (
-              <div class="status-divider" />
-            )}
-
-            {/* Setup button for fresh sandbox */}
-            {!setupRunning && info.heyvm_available && needsSetup && (
-              <div class="setup-section">
-                <div class="setup-description">
-                  Set up the sandbox and start the agent in one step.
-                </div>
-                <button class="btn btn-sm btn-primary setup-btn" onClick={handleFullSetup}>
-                  Set Up Agent
+            {/* Deploy URL (when deployed or remote) */}
+            {currentDeployUrl && (isDeployed || isRemote) && (
+              <div class="status-row">
+                <span class="status-row-label">URL</span>
+                <span class="status-row-value" style={{ fontSize: "10px", fontFamily: "var(--font-mono)" }}>
+                  {currentDeployUrl.replace(/^https?:\/\//, "")}
+                </span>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  onClick={handleCopyUrl}
+                  style={{ marginLeft: "auto", padding: "1px 6px", fontSize: "10px" }}
+                >
+                  {copied ? "Copied" : "Copy"}
                 </button>
               </div>
             )}
 
-            {/* Stopped sandbox — just needs a start */}
-            {!setupRunning && info.heyvm_available && sandboxStopped && (
-              <div class="status-actions">
-                <button class="btn btn-sm btn-primary" onClick={handleFullSetup}>Start Agent</button>
-                <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
-              </div>
+            {/* Local sandbox info (only in local mode) */}
+            {isLocal && (
+              <>
+                <Row label="Sandbox" value={info.sandbox_status} status={
+                  info.sandbox_status === "running" ? "running" :
+                  info.sandbox_status === "stopped" ? "disconnected" :
+                  info.sandbox_status === "not_created" ? "disconnected" : "error"
+                } />
+                <Row label="Name" value={info.sandbox_name} />
+                {info.sandbox_error && <div class="status-error">{info.sandbox_error}</div>}
+              </>
             )}
 
-            {/* Running sandbox actions */}
-            {!setupRunning && info.heyvm_available && !needsSetup && !sandboxStopped && (
-              <div class="status-actions">
-                {info.sandbox_status === "running" && info.agent_status === "disconnected" && (
-                  <button class="btn btn-sm btn-primary" onClick={handleStartAgent}>Start Agent</button>
+            <div class="status-divider" />
+            <Row label="heyvm" value={info.heyvm_available ? "available" : "not found"} status={info.heyvm_available ? "running" : "error"} />
+            {isLocal && <Row label="Data dir" value={info.data_dir} status={info.data_dir_exists ? "running" : "error"} />}
+
+            {/* ── Local mode actions ── */}
+            {isLocal && (
+              <>
+                {/* Setup progress */}
+                {setupRunning && (
+                  <div class="setup-progress">
+                    <div class="setup-progress-spinner" />
+                    <span>{setupProgress}</span>
+                  </div>
                 )}
-                {(info.agent_status === "running" || info.agent_status === "unreachable") && (
-                  <button class="btn btn-sm btn-secondary" onClick={handleStopAgent}>Stop Agent</button>
+
+                {!setupRunning && info.heyvm_available && (
+                  <div class="status-divider" />
                 )}
-                {info.sandbox_status === "running" && (
-                  <button class="btn btn-sm btn-secondary" onClick={handleStopVm}>Stop VM</button>
+
+                {/* Setup button for fresh sandbox */}
+                {!setupRunning && info.heyvm_available && needsSetup && (
+                  <div class="setup-section">
+                    <div class="setup-description">
+                      Set up the sandbox and start the agent in one step.
+                    </div>
+                    <button class="btn btn-sm btn-primary setup-btn" onClick={handleFullSetup}>
+                      Set Up Agent
+                    </button>
+                  </div>
                 )}
-                <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
-              </div>
+
+                {/* Stopped sandbox */}
+                {!setupRunning && info.heyvm_available && sandboxStopped && (
+                  <div class="status-actions">
+                    <button class="btn btn-sm btn-primary" onClick={handleFullSetup}>Start Agent</button>
+                    <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
+                  </div>
+                )}
+
+                {/* Running sandbox actions */}
+                {!setupRunning && info.heyvm_available && !needsSetup && !sandboxStopped && (
+                  <div class="status-actions">
+                    {info.sandbox_status === "running" && info.agent_status === "disconnected" && (
+                      <button class="btn btn-sm btn-primary" onClick={handleStartAgent}>Start Agent</button>
+                    )}
+                    {(info.agent_status === "running" || info.agent_status === "unreachable") && (
+                      <button class="btn btn-sm btn-secondary" onClick={handleStopAgent}>Stop Agent</button>
+                    )}
+                    {info.sandbox_status === "running" && (
+                      <button class="btn btn-sm btn-secondary" onClick={handleStopVm}>Stop VM</button>
+                    )}
+                    <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
+                  </div>
+                )}
+
+                {!info.heyvm_available && (
+                  <div class="status-error" style={{ marginTop: "6px" }}>
+                    Install heyvm to create and manage sandboxes.
+                  </div>
+                )}
+
+                {/* Deploy to cloud button */}
+                {!setupRunning && !deployRunning && info.heyvm_available && (
+                  <>
+                    <div class="status-divider" />
+                    <div class="setup-section">
+                      <div class="setup-description">
+                        Deploy to Heyo Cloud for multi-device access.
+                      </div>
+                      <button class="btn btn-sm btn-primary setup-btn" onClick={handleDeploy}>
+                        Deploy to Cloud
+                      </button>
+                    </div>
+                  </>
+                )}
+
+                {/* Deploy progress */}
+                {deployRunning && (
+                  <div class="setup-progress">
+                    <div class="setup-progress-spinner" />
+                    <span>{deployProgress}</span>
+                  </div>
+                )}
+              </>
             )}
 
-            {!info.heyvm_available && (
-              <div class="status-error" style={{ marginTop: "6px" }}>
-                Install heyvm to create and manage sandboxes.
-              </div>
+            {/* ── Deployed mode actions ── */}
+            {isDeployed && (
+              <>
+                <div class="status-divider" />
+                <div class="status-actions">
+                  <button class="btn btn-sm btn-secondary" onClick={handleTeardown}>Stop Deployment</button>
+                  <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
+                </div>
+              </>
             )}
 
+            {/* ── Remote mode actions ── */}
+            {isRemote && (
+              <>
+                <div class="status-divider" />
+                <div class="status-actions">
+                  <button class="btn btn-sm btn-secondary" onClick={handleDisconnect}>Disconnect</button>
+                  <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
+                </div>
+              </>
+            )}
+
+            {/* ── Connect to remote section (always available) ── */}
+            {!isDeployed && !isRemote && (
+              <>
+                <div class="status-divider" />
+                <button
+                  class="status-logs-toggle"
+                  onClick={() => setShowConnect(!showConnect)}
+                >
+                  {showConnect ? "Hide" : "Connect to Remote"}
+                </button>
+                {showConnect && (
+                  <div class="status-connect-section">
+                    <input
+                      type="text"
+                      class="status-connect-input"
+                      placeholder="https://sandbox.heyo.computer"
+                      value={remoteUrl}
+                      onInput={(e) => setRemoteUrl((e.target as HTMLInputElement).value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleConnect(); }}
+                    />
+                    <button
+                      class="btn btn-sm btn-primary"
+                      onClick={handleConnect}
+                      disabled={connectingRemote || !remoteUrl.trim()}
+                    >
+                      {connectingRemote ? "Connecting..." : "Connect"}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Calendar sync */}
             {calStatus?.connected && (
               <>
                 <div class="status-divider" />

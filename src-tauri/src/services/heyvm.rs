@@ -210,6 +210,94 @@ pub fn port_forward(name: &str, sandbox_port: u16, host_port: Option<u16>) -> Re
         .map_err(|e| format!("port-forward: spawn failed: {}", e))
 }
 
+// ── Cloud deploy helpers ──
+
+/// Options for creating a cloud-deployed sandbox.
+pub struct CloudCreateOpts<'a> {
+    pub name: &'a str,
+    pub backend: &'a str,
+    pub cloud_url: &'a str,
+    pub image: Option<&'a str>,
+    pub open_ports: &'a [PortSpec],
+    pub env_vars: &'a [(&'a str, &'a str)],
+    pub setup_hooks: &'a [&'a str],
+    pub start_command: Option<&'a str>,
+}
+
+pub fn create_cloud_sandbox(opts: &CloudCreateOpts) -> Result<CreateResult, String> {
+    logging::info(&format!("[heyvm] create_cloud_sandbox: name={}, backend={}, cloud_url={}",
+        opts.name, opts.backend, opts.cloud_url));
+    let mut cmd = heyvm_cmd();
+    cmd.args([
+        "create",
+        "--format", "json",
+        "--name", opts.name,
+        "--backend-type", opts.backend,
+        "--cloud-url", opts.cloud_url,
+    ]);
+    if let Some(img) = opts.image {
+        cmd.args(["--image", img]);
+    }
+    for (host, guest) in opts.open_ports {
+        let spec = if *host == 0 {
+            guest.to_string()
+        } else {
+            format!("{}:{}", host, guest)
+        };
+        cmd.args(["--open-port", &spec]);
+    }
+    for (key, val) in opts.env_vars {
+        cmd.args(["--env", &format!("{}={}", key, val)]);
+    }
+    for hook in opts.setup_hooks {
+        cmd.args(["--setup-hook", hook]);
+    }
+    if let Some(start_cmd) = opts.start_command {
+        cmd.args(["--start-command", start_cmd]);
+    }
+    let raw = run("create_cloud", &mut cmd)?;
+    serde_json::from_str(raw.trim())
+        .map_err(|e| format!("create_cloud: failed to parse output: {} (raw: {})", e, raw.trim()))
+}
+
+/// Archive a local directory to Heyo cloud. Returns the raw output (contains archive ID).
+pub fn archive_dir(path: &str, name: &str, mount_path: &str, cloud_url: &str) -> Result<String, String> {
+    logging::info(&format!("[heyvm] archive_dir: path={}, name={}, mount_path={}", path, name, mount_path));
+    let mut cmd = heyvm_cmd();
+    cmd.args([
+        "archive-dir",
+        path,
+        "--name", name,
+        "--mount-path", mount_path,
+        "--cloud-url", cloud_url,
+        "--no-ignore",
+    ]);
+    run("archive_dir", &mut cmd)
+}
+
+/// Bind a sandbox port to a public hostname. Returns the raw output (contains hostname).
+pub fn bind_port(sandbox_id: &str, port: u16, cloud_url: &str) -> Result<String, String> {
+    logging::info(&format!("[heyvm] bind_port: sandbox={}, port={}", sandbox_id, port));
+    run("bind", heyvm_cmd().args([
+        "bind",
+        sandbox_id,
+        &port.to_string(),
+        "--cloud-url", cloud_url,
+    ]))
+}
+
+/// Replace a deployed sandbox's mount contents from an archive.
+pub fn update_sandbox(sandbox_id: &str, archive_id: &str, mount_path: &str, cloud_url: &str) -> Result<String, String> {
+    logging::info(&format!("[heyvm] update_sandbox: sandbox={}, archive={}", sandbox_id, archive_id));
+    run("update", heyvm_cmd().args([
+        "update",
+        "--archive", archive_id,
+        "--mount-path", mount_path,
+        "--cloud-url", cloud_url,
+        sandbox_id,
+    ]))
+}
+
 // ── snapshot ──
 
 #[derive(serde::Serialize)]

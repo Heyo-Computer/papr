@@ -281,15 +281,15 @@ export function SettingsPanel() {
           <div class="settings-section-label">Speech</div>
 
           <label class="settings-field">
-            <span class="settings-label">OpenAI API Key</span>
+            <span class="settings-label">Mistral API Key</span>
             <input
               type="password"
               class="settings-input"
               value={config.speech_api_key}
               onInput={(e) => update({ speech_api_key: e.currentTarget.value })}
-              placeholder="sk-..."
+              placeholder="..."
             />
-            <span class="settings-hint">Used for Whisper voice transcription (Ctrl+H)</span>
+            <span class="settings-hint">Used for Voxtral voice transcription (Ctrl+H)</span>
           </label>
 
           {/* ── Calendar section ── */}

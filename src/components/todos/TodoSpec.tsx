@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "preact/hooks";
-import { loadSpec, saveSpec } from "../../api/commands";
+import { useState, useEffect, useCallback, useRef } from "preact/hooks";
+import { loadSpec, saveSpec, speakText } from "../../api/commands";
 import { MarkdownRenderer } from "../markdown/MarkdownRenderer";
 import type { TodoItem } from "../../types";
 
@@ -23,28 +23,37 @@ function stripMarkdown(md: string): string {
 
 function useReadAloud() {
   const [speaking, setSpeaking] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const toggle = useCallback((text: string) => {
-    if (speechSynthesis.speaking) {
-      speechSynthesis.cancel();
-      setSpeaking(false);
+  const stop = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setSpeaking(false);
+  }, []);
+
+  const toggle = useCallback(async (text: string) => {
+    if (speaking) {
+      stop();
       return;
     }
     const plain = stripMarkdown(text);
     if (!plain) return;
-    const utterance = new SpeechSynthesisUtterance(plain);
-    utterance.onend = () => setSpeaking(false);
-    utterance.onerror = () => setSpeaking(false);
-    speechSynthesis.speak(utterance);
-    setSpeaking(true);
-  }, []);
 
-  const stop = useCallback(() => {
-    if (speechSynthesis.speaking) {
-      speechSynthesis.cancel();
+    setSpeaking(true);
+    try {
+      const base64Audio = await speakText(plain);
+      const audio = new Audio(`data:audio/wav;base64,${base64Audio}`);
+      audioRef.current = audio;
+      audio.onended = () => { audioRef.current = null; setSpeaking(false); };
+      audio.onerror = () => { audioRef.current = null; setSpeaking(false); };
+      await audio.play();
+    } catch (e) {
+      console.error("TTS failed:", e);
       setSpeaking(false);
     }
-  }, []);
+  }, [speaking, stop]);
 
   return { speaking, toggle, stop };
 }

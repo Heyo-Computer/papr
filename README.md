@@ -123,6 +123,27 @@ Syncs today's calendar events as todos on app startup.
 
 Events sync automatically on each app launch. Use **Sync now** in settings for manual sync.
 
+## Voice Transcription
+
+Press **Ctrl+H** to record voice input, which is transcribed via the Mistral Voxtral API and inserted into the chat.
+
+Add your Mistral API key under **Settings > Speech**.
+
+### Linux: GStreamer Plugins Required
+
+On Linux, the Tauri webview (WebKitGTK) uses GStreamer to encode audio from the microphone. Without the right plugins, voice recording will silently produce no data. Install these packages:
+
+```bash
+# Ubuntu / Debian / Pop!_OS
+sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+
+# If using PulseAudio
+sudo apt install gstreamer1.0-pulseaudio
+
+# If using PipeWire
+sudo apt install gstreamer1.0-pipewire
+```
+
 ## Configuration
 
 All configuration is stored in `~/.todo/config/`:

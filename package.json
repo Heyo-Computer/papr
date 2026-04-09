@@ -10,13 +10,15 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "preact": "^10.25.1",
     "@preact/signals": "^2",
     "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-shell": "^2",
+    "dompurify": "^3",
     "marked": "^15",
-    "dompurify": "^3"
+    "preact": "^10.25.1",
+    "tauri-plugin-mic-recorder-api": "^2.0.0"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.9.3",

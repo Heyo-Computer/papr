@@ -17,6 +17,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_mic_recorder::init())
         .manage(app_state)
         .setup(|app| {
             // Grant microphone permission on Linux (WebKitGTK)
@@ -25,16 +27,27 @@ pub fn run() {
                 use tauri::Manager;
                 use webkit2gtk::{WebViewExt, SettingsExt, PermissionRequestExt, PermissionRequest};
                 if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.with_webview(|webview| {
+                    match window.with_webview(|webview| {
                         let wv = webview.inner();
                         if let Some(settings) = wv.settings() {
+                            settings.set_enable_media(true);
                             settings.set_enable_media_stream(true);
+                            settings.set_enable_media_capabilities(true);
+                            logging::info("WebKitGTK: media stream settings enabled");
+                        } else {
+                            logging::error("WebKitGTK: failed to get settings");
                         }
                         wv.connect_permission_request(|_, request: &PermissionRequest| {
+                            logging::info("WebKitGTK: auto-granting permission request");
                             request.allow();
                             true
                         });
-                    });
+                    }) {
+                        Ok(_) => logging::info("WebKitGTK: webview media setup complete"),
+                        Err(e) => logging::error(&format!("WebKitGTK: with_webview failed: {}", e)),
+                    }
+                } else {
+                    logging::error("WebKitGTK: could not find main window for media setup");
                 }
             }
 
@@ -49,6 +62,7 @@ pub fn run() {
             // Storage
             commands::storage::load_day,
             commands::storage::get_days_range,
+            commands::storage::get_month_range,
             commands::storage::save_todo,
             commands::storage::update_todo,
             commands::storage::delete_todo,
@@ -90,6 +104,14 @@ pub fn run() {
             commands::calendar::sync_calendar_to_todos,
             // Speech
             commands::speech::transcribe_audio,
+            commands::speech::transcribe_file,
+            commands::speech::speak_text,
+            // Deploy
+            commands::deploy::deploy_agent,
+            commands::deploy::connect_remote,
+            commands::deploy::disconnect_remote,
+            commands::deploy::teardown_deploy,
+            commands::deploy::get_deployment_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

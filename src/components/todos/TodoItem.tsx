@@ -22,15 +22,15 @@ export function TodoItem({ todo, date, onToggle, onDelete, onUpdate }: TodoItemP
       <div class="todo-item-row">
         <button
           class={`todo-checkbox ${todo.completed ? "checked" : ""}`}
-          onClick={onToggle}
+          onClick={(e) => { e.stopPropagation(); onToggle(); }}
         />
         <span class={`todo-title ${todo.completed ? "completed" : ""}`}>
           {todo.title}
         </span>
-        <button class="todo-expand-btn" onClick={toggleExpand}>
+        <button class="todo-expand-btn" onClick={(e) => { e.stopPropagation(); toggleExpand(); }}>
           {isExpanded ? "Collapse" : "Spec"}
         </button>
-        <button class="todo-expand-btn todo-delete-btn" onClick={onDelete} title="Delete">
+        <button class="todo-expand-btn todo-delete-btn" onClick={(e) => { e.stopPropagation(); onDelete(); }} title="Delete">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6" />
             <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />

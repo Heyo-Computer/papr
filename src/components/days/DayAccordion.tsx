@@ -1,24 +1,33 @@
-import { useEffect } from "preact/hooks";
-import { days, expandedDate, getDateRange, formatDate, dayByDate, updateDayTodos, expandedTodoId } from "../../state/store";
+import { useEffect, useRef } from "preact/hooks";
+import { days, expandedDate, getDateRange, formatDate, dayByDate, expandedTodoId, todayString } from "../../state/store";
 import { getDaysRange, saveTodo, updateTodo as updateTodoCmd, deleteTodo as deleteTodoCmd } from "../../api/commands";
 import { TodoItem } from "../todos/TodoItem";
 import { AddTodo } from "../todos/AddTodo";
 import type { TodoItem as TodoItemType } from "../../types";
-import { signal } from "@preact/signals";
+import { signal, useSignal } from "@preact/signals";
 
 // Track whether all sections are collapsed (for the toggle button)
 const allCollapsed = signal(false);
 
-export function DayAccordion() {
+export function WeekAccordion() {
+  const todayRef = useRef<HTMLDivElement>(null);
+  const loaded = useSignal(false);
+
   useEffect(() => {
     getDaysRange().then((entries) => {
       days.value = entries;
     }).catch(() => {
       days.value = getDateRange().map((date) => ({ date, todos: [] }));
+    }).finally(() => {
+      loaded.value = true;
+      requestAnimationFrame(() => {
+        todayRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
     });
   }, []);
 
   const dateRange = getDateRange();
+  const today = todayString();
 
   function toggleDay(date: string) {
     expandedDate.value = expandedDate.value === date ? "" : date;
@@ -34,29 +43,46 @@ export function DayAccordion() {
       allCollapsed.value = true;
     } else {
       // Expand today
-      expandedDate.value = dateRange[dateRange.length - 1];
+      expandedDate.value = today;
       allCollapsed.value = false;
     }
   }
 
+  async function reload() {
+    const entries = await getDaysRange();
+    days.value = entries;
+  }
+
   async function handleAdd(date: string, title: string) {
-    const updated = await saveTodo(date, title);
-    updateDayTodos(date, updated.todos);
+    console.log("[WeekAccordion] handleAdd called", { date, title });
+    try {
+      const result = await saveTodo(date, title);
+      console.log("[WeekAccordion] saveTodo returned", { date, todosCount: result.todos.length, result });
+      const entries = await getDaysRange();
+      console.log("[WeekAccordion] reload returned", entries.map(e => ({ date: e.date, count: e.todos.length })));
+      days.value = entries;
+    } catch (e) {
+      console.error("[WeekAccordion] handleAdd FAILED", e);
+    }
   }
 
   async function handleToggle(date: string, todo: TodoItemType) {
-    const updated = await updateTodoCmd(date, { ...todo, completed: !todo.completed });
-    updateDayTodos(date, updated.todos);
+    await updateTodoCmd(date, { ...todo, completed: !todo.completed });
+    await reload();
   }
 
   async function handleDelete(date: string, todoId: string) {
-    const updated = await deleteTodoCmd(date, todoId);
-    updateDayTodos(date, updated.todos);
+    await deleteTodoCmd(date, todoId);
+    await reload();
   }
 
   async function handleUpdate(date: string, todo: TodoItemType) {
-    const updated = await updateTodoCmd(date, todo);
-    updateDayTodos(date, updated.todos);
+    await updateTodoCmd(date, todo);
+    await reload();
+  }
+
+  if (!loaded.value) {
+    return <div class="accordion" />;
   }
 
   const hasExpanded = expandedDate.value !== "";
@@ -91,7 +117,7 @@ export function DayAccordion() {
         const count = todos.length;
 
         return (
-          <div key={date} class={`accordion-section ${isOpen ? "open" : ""}`}>
+          <div key={date} ref={info.isToday ? todayRef : undefined} class={`accordion-section ${isOpen ? "open" : ""}`}>
             <button
               class={`accordion-header ${info.isToday ? "today" : ""}`}
               onClick={() => toggleDay(date)}

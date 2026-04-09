@@ -54,16 +54,17 @@ pub fn save_spec(storage_root: &Path, date: &str, todo_id: &str, content: &str) 
     std::fs::write(&path, content).map_err(|e| e.to_string())
 }
 
-pub fn load_days_range(storage_root: &Path) -> Vec<DayEntry> {
+pub fn load_days_range(storage_root: &Path, offset_start: i64, offset_end: i64) -> Vec<DayEntry> {
     let today = chrono::Local::now().date_naive();
-    (0..7)
-        .rev()
-        .map(|i| {
-            let date = today - chrono::Duration::days(i);
-            let date_str = date.format("%Y-%m-%d").to_string();
-            load_day(storage_root, &date_str)
-        })
-        .collect()
+    let mut date = today + chrono::Duration::days(offset_start);
+    let end = today + chrono::Duration::days(offset_end);
+    let mut entries = Vec::new();
+    while date <= end {
+        let date_str = date.format("%Y-%m-%d").to_string();
+        entries.push(load_day(storage_root, &date_str));
+        date += chrono::Duration::days(1);
+    }
+    entries
 }
 
 pub fn add_todo(storage_root: &Path, date: &str, title: &str) -> Result<DayEntry, String> {

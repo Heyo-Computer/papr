@@ -74,7 +74,9 @@ app.post("/rpc", async (req, res) => {
       }
 
       case "storage/load_days_range": {
-        res.json(makeResponse(request.id, loadDaysRange()));
+        const offsetStart = (p.offset_start as number) ?? -6;
+        const offsetEnd = (p.offset_end as number) ?? 1;
+        res.json(makeResponse(request.id, loadDaysRange(offsetStart, offsetEnd)));
         break;
       }
 

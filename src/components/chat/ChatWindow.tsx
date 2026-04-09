@@ -1,12 +1,17 @@
-import { chatMessages, isAgentLoading, agentStatus, statusPopoverOpen } from "../../state/store";
-import { sendMessage } from "../../api/commands";
+import { chatMessages, isAgentLoading, agentStatus, statusPopoverOpen, days } from "../../state/store";
+import { sendMessage, getDaysRange } from "../../api/commands";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+
+let msgCounter = 0;
+function localId(): string {
+  return `local-${Date.now()}-${++msgCounter}`;
+}
 
 export function ChatWindow() {
   async function handleSend(text: string) {
     const userMsg = {
-      id: crypto.randomUUID(),
+      id: localId(),
       role: "user" as const,
       content: text,
       timestamp: new Date().toISOString(),
@@ -17,9 +22,11 @@ export function ChatWindow() {
     try {
       const response = await sendMessage(text);
       chatMessages.value = [...chatMessages.value, response];
+      // Refresh days in case the agent modified todos
+      getDaysRange().then((entries) => { days.value = entries; }).catch(() => {});
     } catch (err) {
       const errorMsg = {
-        id: crypto.randomUUID(),
+        id: localId(),
         role: "assistant" as const,
         content: `${err}`,
         timestamp: new Date().toISOString(),

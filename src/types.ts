@@ -35,9 +35,17 @@ export interface Theme {
   };
 }
 
-export type ViewTab = "days" | "artifacts";
+export type ViewTab = "week" | "month" | "artifacts";
 
 export type AgentStatus = "disconnected" | "starting" | "running" | "error";
+
+export type AgentMode = "local" | "deployed" | "remote";
+
+export interface DeploymentInfo {
+  mode: AgentMode;
+  sandbox_id: string | null;
+  public_url: string | null;
+}
 
 export interface AgentConfig {
   api_key: string;
@@ -83,4 +91,6 @@ export interface StatusInfo {
   agent_error: string | null;
   sandbox_error: string | null;
   log_file: string;
+  agent_mode: AgentMode;
+  deploy_url: string | null;
 }

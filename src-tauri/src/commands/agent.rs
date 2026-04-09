@@ -228,17 +228,25 @@ pub async fn stop_agent(
     app: AppHandle,
 ) -> Result<(), String> {
     logging::info("stop_agent: stopping");
-    let url = {
-        let lock = state.agent_url.lock().unwrap();
-        lock.clone()
-    };
 
-    if let Some(url) = url {
-        let _ = svc::send_rpc(&url, "agent/stop", serde_json::Value::Null).await;
+    let mode = state.agent_mode.lock().unwrap().clone();
+
+    match mode {
+        crate::state::AgentMode::Local => {
+            // Local mode: send stop RPC and kill port-forward
+            let url = state.agent_url.lock().unwrap().clone();
+            if let Some(url) = url {
+                let _ = svc::send_rpc(&url, "agent/stop", serde_json::Value::Null).await;
+            }
+            state.kill_port_forward();
+            *state.agent_url.lock().unwrap() = None;
+        }
+        crate::state::AgentMode::Deployed | crate::state::AgentMode::Remote => {
+            // Deployed/Remote: just clear the URL, sandbox keeps running
+            *state.agent_url.lock().unwrap() = None;
+        }
     }
 
-    state.kill_port_forward();
-    *state.agent_url.lock().unwrap() = None;
     let _ = app.emit("agent-status", "disconnected");
     logging::info("stop_agent: done");
     Ok(())
@@ -329,10 +337,36 @@ async fn establish_host_connection(
 }
 
 /// Try to auto-start the agent on app boot. Called from the Tauri setup hook.
-/// Only attempts if the sandbox exists and an API key is configured.
+/// Checks for persisted deployment info first; falls back to local sandbox auto-start.
 /// Failures are logged but not propagated — the user can always start manually.
 pub async fn auto_start_agent(app: AppHandle) {
     let state = app.state::<AppState>();
+
+    // Check for persisted deployment (deployed or remote mode)
+    let deploy_info = state.load_deployment_info();
+    if deploy_info.mode != crate::state::AgentMode::Local {
+        if let Some(ref url) = deploy_info.public_url {
+            logging::info(&format!("auto_start: found persisted {:?} deployment at {}", deploy_info.mode, url));
+            let _ = app.emit("agent-status", "starting");
+
+            if svc::check_health(url).await {
+                *state.agent_url.lock().unwrap() = Some(url.clone());
+                state.apply_deployment(&deploy_info);
+                let _ = app.emit("agent-status", "running");
+                logging::info(&format!("auto_start: reconnected to {} deployment at {}",
+                    if deploy_info.mode == crate::state::AgentMode::Deployed { "deployed" } else { "remote" }, url));
+                return;
+            } else {
+                logging::warn(&format!("auto_start: persisted deployment at {} not healthy", url));
+                // Keep deployment info so user can retry, but report error
+                state.apply_deployment(&deploy_info);
+                let _ = app.emit("agent-status", "error");
+                return;
+            }
+        }
+    }
+
+    // Local mode: existing auto-start logic
     let config = read_config(&state);
 
     if config.api_key.is_empty() {

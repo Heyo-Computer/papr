@@ -22,11 +22,15 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   const handleTranscription = useCallback((transcribed: string) => {
-    setText((prev) => (prev ? prev + " " + transcribed : transcribed));
-    if (inputRef.current) {
-      inputRef.current.focus();
+    const message = text.trim() ? text.trim() + " " + transcribed : transcribed;
+    if (message.trim() && !disabled) {
+      onSend(message.trim());
+      setText("");
+      if (inputRef.current) {
+        inputRef.current.style.height = "auto";
+      }
     }
-  }, []);
+  }, [text, disabled, onSend]);
 
   const { toggle: toggleVoice } = useVoiceInput(handleTranscription);
   const vState = voiceState.value;
