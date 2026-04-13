@@ -49,7 +49,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Build agent
-        run: cd agent && bun install --frozen-lockfile && bun run build
+        run: cd agent && bun install && bun run build
 
       - uses: tauri-apps/tauri-action@v0
         with:
