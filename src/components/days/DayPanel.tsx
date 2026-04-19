@@ -1,5 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
-import { viewedDate, todayString, formatDate, expandedTodoId } from "../../state/store";
+import { viewedDate, todayString, formatDate, expandedTodoId, isAgentLoading } from "../../state/store";
+import { sendChatMessage, buildSummaryPrompt } from "../../api/chat";
 import { loadDay, saveTodo, updateTodo as updateTodoCmd, deleteTodo as deleteTodoCmd } from "../../api/commands";
 import { TodoItem } from "../todos/TodoItem";
 import { AddTodo } from "../todos/AddTodo";
@@ -78,6 +79,10 @@ export function DayPanel() {
   const todos = entry?.todos ?? [];
   const { speaking, toggle: toggleSpeak, stop: stopSpeak } = useReadAloud();
 
+  async function handleSummarize() {
+    await sendChatMessage(buildSummaryPrompt(date, formatted, todos));
+  }
+
   useEffect(() => () => stopSpeak(), []);
   useEffect(() => { stopSpeak(); }, [date]);
 
@@ -97,6 +102,14 @@ export function DayPanel() {
           disabled={loading}
         >
           {speaking ? "\u25A0" : "\u25B6"}
+        </button>
+        <button
+          class="day-nav-btn day-ai-summary-btn"
+          onClick={handleSummarize}
+          disabled={loading || isAgentLoading.value || todos.length === 0}
+          title="Ask agent to summarize this day"
+        >
+          &#10024;
         </button>
         {!isToday && (
           <button class="btn btn-sm btn-ghost day-today-btn" onClick={goToday}>Today</button>

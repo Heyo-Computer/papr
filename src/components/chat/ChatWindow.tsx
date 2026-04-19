@@ -1,41 +1,11 @@
-import { chatMessages, isAgentLoading, agentStatus, statusPopoverOpen, days, artifacts } from "../../state/store";
-import { sendMessage, getDaysRange, listArtifacts } from "../../api/commands";
+import { chatMessages, isAgentLoading, agentStatus, statusPopoverOpen } from "../../state/store";
+import { sendChatMessage } from "../../api/chat";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 
-let msgCounter = 0;
-function localId(): string {
-  return `local-${Date.now()}-${++msgCounter}`;
-}
-
 export function ChatWindow() {
   async function handleSend(text: string) {
-    const userMsg = {
-      id: localId(),
-      role: "user" as const,
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    chatMessages.value = [...chatMessages.value, userMsg];
-    isAgentLoading.value = true;
-
-    try {
-      const response = await sendMessage(text);
-      chatMessages.value = [...chatMessages.value, response];
-      // Refresh days and artifacts in case the agent modified them
-      getDaysRange().then((entries) => { days.value = entries; }).catch(() => {});
-      listArtifacts().then((items) => { artifacts.value = items; }).catch(() => {});
-    } catch (err) {
-      const errorMsg = {
-        id: localId(),
-        role: "assistant" as const,
-        content: `${err}`,
-        timestamp: new Date().toISOString(),
-      };
-      chatMessages.value = [...chatMessages.value, errorMsg];
-    } finally {
-      isAgentLoading.value = false;
-    }
+    await sendChatMessage(text);
   }
 
   const status = agentStatus.value;

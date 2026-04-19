@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "preact/hooks";
-import { days, expandedDate, getDateRange, formatDate, dayByDate, expandedTodoId, todayString } from "../../state/store";
+import { days, expandedDate, getDateRange, formatDate, dayByDate, expandedTodoId, todayString, isAgentLoading } from "../../state/store";
 import { getDaysRange, saveTodo, updateTodo as updateTodoCmd, deleteTodo as deleteTodoCmd } from "../../api/commands";
+import { sendChatMessage, buildSummaryPrompt } from "../../api/chat";
 import { TodoItem } from "../todos/TodoItem";
 import { AddTodo } from "../todos/AddTodo";
 import type { TodoItem as TodoItemType } from "../../types";
@@ -81,6 +82,10 @@ export function WeekAccordion() {
     await reload();
   }
 
+  async function handleSummarize(date: string, todos: TodoItemType[]) {
+    await sendChatMessage(buildSummaryPrompt(date, formatDate(date), todos));
+  }
+
   if (!loaded.value) {
     return <div class="accordion" />;
   }
@@ -147,6 +152,16 @@ export function WeekAccordion() {
                   </div>
                 ) : (
                   <div class="accordion-empty">No todos yet</div>
+                )}
+                {todos.length > 0 && (
+                  <button
+                    class="btn btn-sm btn-ghost accordion-summarize-btn"
+                    onClick={() => handleSummarize(date, todos)}
+                    disabled={isAgentLoading.value}
+                    title="Ask agent to summarize this day"
+                  >
+                    Summarize
+                  </button>
                 )}
                 <AddTodo onAdd={(title) => handleAdd(date, title)} />
               </div>
