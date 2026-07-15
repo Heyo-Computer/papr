@@ -94,13 +94,20 @@ pub fn run() {
             commands::agent::update_agent,
             commands::agent::use_existing_vm,
             commands::agent::send_message,
+            commands::agent::send_message_streaming,
+            commands::agent::abort_message,
             commands::agent::structure_note,
             commands::agent::agent_status,
             commands::agent::get_chat_history,
+            // Plugins (Pi package library)
+            commands::plugins::list_plugins,
+            commands::plugins::install_plugin,
+            commands::plugins::remove_plugin,
             // Artifacts
             commands::artifacts::list_artifacts,
             commands::artifacts::list_all_artifacts,
             commands::artifacts::read_artifact,
+            commands::artifacts::open_artifact_external,
             commands::artifacts::save_artifact,
             commands::artifacts::delete_artifact,
             commands::artifacts::create_artifact_folder,
@@ -168,6 +175,11 @@ pub fn run() {
             commands::migration::migrate_local_to_sandbox,
             commands::migration::migration_stats,
             commands::migration::export_sandbox_to_local,
+            // Pending (offline dirty-save) creates
+            commands::pending::list_pending_creates,
+            commands::pending::enqueue_pending_create,
+            commands::pending::remove_pending_create,
+            commands::pending::flush_pending_creates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

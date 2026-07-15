@@ -1,7 +1,7 @@
 import { ThemeProvider, themeList, setTheme } from "./theme/ThemeProvider";
 import { useTheme } from "./theme/ThemeProvider";
 import { useRef, useCallback, useEffect, useState } from "preact/hooks";
-import { activeTab, agentStatus, agentMode, settingsOpen, agentName, statusPopoverOpen, setupProgress, days, allArtifacts, allLists, allBooks } from "./state/store";
+import { activeTab, agentStatus, agentMode, settingsOpen, agentName, statusPopoverOpen, setupProgress, days, allArtifacts, allLists, allBooks, offlineDismissed, pendingCreates } from "./state/store";
 import { WeekAccordion } from "./components/days/DayAccordion";
 import { MonthAccordion } from "./components/days/MonthAccordion";
 import { DayPanel } from "./components/days/DayPanel";
@@ -13,7 +13,7 @@ import { ChatWindow } from "./components/chat/ChatWindow";
 import { SettingsPanel } from "./components/settings/SettingsPanel";
 import { StatusPopover } from "./components/status/StatusPopover";
 import { setupEventListeners } from "./api/events";
-import { getAgentStatus, getAgentConfig, setAgentConfig, getDaysRange, listAllArtifacts, listLists, listBooks, setupAgent } from "./api/commands";
+import { getAgentStatus, getAgentConfig, setAgentConfig, getDaysRange, listAllArtifacts, listLists, listBooks, setupAgent, listPendingCreates } from "./api/commands";
 import type { ViewTab, AgentStatus } from "./types";
 import { signal } from "@preact/signals";
 
@@ -74,6 +74,9 @@ function BootGate() {
               <button class="btn btn-secondary" onClick={() => (settingsOpen.value = true)}>
                 Open Settings
               </button>
+              <button class="btn btn-ghost" onClick={() => (offlineDismissed.value = true)}>
+                Continue offline
+              </button>
             </div>
           </>
         ) : (
@@ -83,9 +86,24 @@ function BootGate() {
             <div class="boot-gate-msg">
               {progress || "Bringing up your data agent. First launch can take a minute."}
             </div>
+            <div class="boot-gate-actions">
+              <button class="btn btn-ghost" onClick={() => (offlineDismissed.value = true)}>
+                Continue offline
+              </button>
+            </div>
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Slim persistent banner shown when working in the panels without the agent. */
+function OfflineBanner() {
+  return (
+    <div class="offline-banner">
+      Offline — the sandbox isn't running. New books and lists are saved locally and
+      will sync automatically when it reconnects.
     </div>
   );
 }
@@ -112,6 +130,8 @@ function AppShell() {
     listAllArtifacts().then((a) => { allArtifacts.value = a; }).catch(() => {});
     listLists().then((l) => { allLists.value = l; }).catch(() => {});
     listBooks().then((b) => { allBooks.value = b; }).catch(() => {});
+    // Surface any creates queued offline in a previous session.
+    listPendingCreates().then((p) => { pendingCreates.value = p; }).catch(() => {});
 
     // Re-fetch data on window focus when in deployed/remote mode (multi-device sync)
     const handleVisibility = () => {
@@ -231,8 +251,9 @@ function AppShell() {
       {/* Scrollable content area — gated on the sandbox being up, since it's the
           single source of truth for all data. */}
       <div class="content-area">
-        {agentStatus.value === "running" ? (
+        {agentStatus.value === "running" || offlineDismissed.value ? (
           <>
+            {agentStatus.value !== "running" && <OfflineBanner />}
             {activeTab.value === "day" && <DayPanel />}
             {activeTab.value === "week" && <WeekAccordion />}
             {activeTab.value === "month" && <MonthAccordion />}

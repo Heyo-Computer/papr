@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { openArtifactExternal } from "../../api/commands";
 import type { Artifact } from "../../types";
 
 interface ArtifactItemProps {
@@ -43,9 +44,12 @@ export function ArtifactItem({ artifact, onDelete, onView, onRename, onDrop, onD
   async function handleOpenWith(e: Event) {
     e.stopPropagation();
     try {
-      await openPath(artifact.path);
+      // The artifact lives inside the VM (/data/artifacts), unreachable from the
+      // host, so materialize a local copy first and open that.
+      const localPath = await openArtifactExternal(artifact.relative_path);
+      await openPath(localPath);
     } catch (err) {
-      console.error("openPath failed", err);
+      console.error("open artifact externally failed", err);
     }
   }
 

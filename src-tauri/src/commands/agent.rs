@@ -77,7 +77,7 @@ pub async fn setup_agent(
 
     // Step 1: Ensure data directory
     progress(&app, "Creating data directory...");
-    for sub in &["storage", "artifacts", "config", "logs"] {
+    for sub in &["storage", "artifacts", "config", "logs", "pi"] {
         let p = format!("{}/{}", data_dir, sub);
         if let Err(e) = std::fs::create_dir_all(&p) {
             let msg = format!("setup_agent: failed to create {}: {}", p, e);
@@ -324,6 +324,110 @@ pub async fn send_message(
     result
 }
 
+/// Stream a chat turn. Returns immediately; assistant text deltas, tool
+/// activity, and a terminal `done` are delivered to the frontend via the
+/// `chat-stream` Tauri event. Each payload carries the `requestId` so the UI can
+/// correlate events with the bubble it created. The non-streaming `send_message`
+/// remains as a fallback. Consumes the agent's SSE endpoint with
+/// `Response::chunk()` (no extra reqwest feature needed).
+#[tauri::command]
+pub async fn send_message_streaming(
+    message: String,
+    request_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let url = {
+        let lock = state.agent_url.lock().unwrap();
+        lock.clone()
+    }
+    .ok_or("Agent is not running. Use the status popover to set up the agent.")?;
+
+    logging::info(&format!(
+        "send_message_streaming: streaming {} chars to {}",
+        message.len(),
+        url
+    ));
+
+    tokio::spawn(async move {
+        let emit = |mut payload: serde_json::Value| {
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert(
+                    "requestId".into(),
+                    serde_json::Value::String(request_id.clone()),
+                );
+            }
+            let _ = app.emit("chat-stream", payload);
+        };
+
+        let resp = svc::http_client()
+            .post(format!("{}/chat/stream", url))
+            .timeout(std::time::Duration::from_secs(900))
+            .json(&serde_json::json!({ "message": message }))
+            .send()
+            .await;
+
+        let mut resp = match resp {
+            Ok(r) => r,
+            Err(e) => {
+                emit(serde_json::json!({ "kind": "error", "message": format!("stream request failed: {}", e) }));
+                emit(serde_json::json!({ "kind": "done" }));
+                return;
+            }
+        };
+
+        // Parse newline-delimited `data: {json}` SSE frames, renaming the agent's
+        // `type` field to `kind` for the frontend payload.
+        let mut buf = String::new();
+        loop {
+            match resp.chunk().await {
+                Ok(Some(bytes)) => {
+                    buf.push_str(&String::from_utf8_lossy(&bytes));
+                    while let Some(idx) = buf.find("\n\n") {
+                        let frame: String = buf.drain(..idx + 2).collect();
+                        for line in frame.lines() {
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if let Ok(mut val) =
+                                    serde_json::from_str::<serde_json::Value>(data)
+                                {
+                                    if let Some(obj) = val.as_object_mut() {
+                                        if let Some(t) = obj.remove("type") {
+                                            obj.insert("kind".into(), t);
+                                        }
+                                    }
+                                    emit(val);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    emit(serde_json::json!({ "kind": "error", "message": format!("stream read error: {}", e) }));
+                    break;
+                }
+            }
+        }
+        // Safety net in case the stream dropped before the agent's own `done`.
+        emit(serde_json::json!({ "kind": "done" }));
+    });
+
+    Ok(())
+}
+
+/// Abort the in-flight streaming turn without stopping the agent process.
+#[tauri::command]
+pub async fn abort_message(state: State<'_, AppState>) -> Result<(), String> {
+    let url = {
+        let lock = state.agent_url.lock().unwrap();
+        lock.clone()
+    };
+    if let Some(url) = url {
+        let _ = svc::send_rpc(&url, "agent/abort", serde_json::json!({})).await;
+    }
+    Ok(())
+}
+
 /// A voice transcript run through the agent into clean, structured markdown.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct StructuredNote {
@@ -395,6 +499,9 @@ async fn npm_install_agent(
     vm_name: &str,
     app: &AppHandle,
 ) -> Result<(), String> {
+    // Install into the rootfs-backed node_modules, not the tiny /data volume.
+    ensure_agent_modules(vm_name);
+
     let probe = "cd /data/agent && \
         sha256sum package.json 2>/dev/null > /data/.pkg-hash-new; \
         if [ -d node_modules ] && [ -s /data/.pkg-hash ] && \
@@ -463,12 +570,41 @@ async fn npm_install_agent(
     Err("npm install timed out after 5 minutes".to_string())
 }
 
+/// Keep the agent's `node_modules` on the roomy VM rootfs instead of the tiny
+/// copy-in `/data` volume (~59 MB). heyvm sizes `/data` to the host `~/.todo`
+/// seed, and the Pi packages (`@earendil-works/pi-*`) are far larger than it —
+/// installing them onto `/data` fills it (ENOSPC) and the agent never starts.
+/// We stash node_modules on the rootfs at `/opt/agent-modules` and bind-mount it
+/// over `/data/agent/node_modules`. The bind mount is runtime state (lost on VM
+/// reboot), so we call this before every npm install AND every agent start to
+/// re-establish it idempotently; the installed modules on the rootfs persist.
+/// Best-effort: logs but never fails the caller.
+fn ensure_agent_modules(vm_name: &str) {
+    // mkdir both, then bind-mount only if not already mounted (idempotent). Probe
+    // /proc/mounts rather than `mountpoint` so we don't depend on util-linux.
+    let cmd = "mkdir -p /opt/agent-modules /data/agent/node_modules && \
+        (grep -q ' /data/agent/node_modules ' /proc/mounts || \
+         mount --bind /opt/agent-modules /data/agent/node_modules)";
+    match heyvm::exec_in_sandbox_json(vm_name, &["sh", "-c", cmd], Some("15s")) {
+        Ok(out) if out.exit_code == 0 => logging::info("ensure_agent_modules: node_modules bind-mounted onto rootfs"),
+        Ok(out) => logging::warn(&format!("ensure_agent_modules: exit {} ({})", out.exit_code, out.stderr.trim())),
+        Err(e) => logging::warn(&format!("ensure_agent_modules: exec error: {}", e)),
+    }
+}
+
 /// Build the agent's start command using the configured provider, then exec
 /// it in the sandbox as a background process. Logs but does not return errors —
 /// the caller relies on `wait_for_agent` to confirm health.
 fn start_agent_process(vm_name: &str, config: &crate::commands::config::AgentConfig) {
+    // Re-establish the rootfs node_modules bind mount before launching node —
+    // covers the VM-reboot case where the mount (but not the modules) was lost.
+    ensure_agent_modules(vm_name);
+
     let provider = if config.llm_provider.is_empty() { "anthropic" } else { &config.llm_provider };
-    let mut env_parts = format!("PORT={} LLM_PROVIDER={}", AGENT_PORT, provider);
+    // Pi keeps its config, installed packages, and per-day sessions under
+    // PI_CODING_AGENT_DIR. It must live on /data so it survives `heyvm sync`
+    // (mounts are copy-in; only /data persists back to the host).
+    let mut env_parts = format!("PORT={} LLM_PROVIDER={} PI_CODING_AGENT_DIR=/data/pi", AGENT_PORT, provider);
 
     if provider == "openrouter" {
         if !config.openrouter_api_key.is_empty() {
@@ -548,8 +684,12 @@ fn push_agent_code(vm_name: &str, agent_src: &std::path::Path) -> Result<(), Str
 
     let result = (|| -> Result<(), String> {
         heyvm::scp_into_sandbox(vm_name, &tmp, "/tmp/agent-upload.tgz")?;
+        // Unmount the rootfs-backed node_modules first, so `rm -rf /data/agent`
+        // clears only the mountpoint and does NOT recurse into and wipe the
+        // modules on the rootfs. npm_install_agent re-mounts and refreshes after.
         heyvm::exec_in_sandbox(vm_name, &["sh", "-c",
-            "rm -rf /data/agent && mkdir -p /data/agent && \
+            "umount /data/agent/node_modules 2>/dev/null; \
+             rm -rf /data/agent && mkdir -p /data/agent && \
              tar xzf /tmp/agent-upload.tgz -C /data/agent && \
              rm -f /tmp/agent-upload.tgz && test -f /data/agent/dist/index.js"])?;
         Ok(())
@@ -968,6 +1108,17 @@ fn deploy_agent_code(data_dir: &str, agent_src: &std::path::Path) -> Result<(), 
     logging::info(&format!("deploy_agent_code: src contents: {:?}", entries));
 
     copy_dir_recursive(&agent_src, &agent_dst).map_err(|e| format!("Failed to deploy agent: {}", e))?;
+
+    // Never seed node_modules into /data: this dir is copied into the tiny /data
+    // volume at sandbox creation, and the Pi deps would overflow it. copy_dir_recursive
+    // already skips the source's node_modules, but strip any stale copy left in the
+    // destination by an earlier (pre-migration) deploy. It's reinstalled onto the
+    // rootfs post-create (see ensure_agent_modules / npm_install_agent).
+    if let Err(e) = std::fs::remove_dir_all(agent_dst.join("node_modules")) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            logging::warn(&format!("deploy_agent_code: could not strip stale node_modules: {}", e));
+        }
+    }
 
     let index_js = agent_dst.join("dist/index.js");
     let pkg_json = agent_dst.join("package.json");

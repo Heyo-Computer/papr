@@ -157,9 +157,12 @@ pub fn sandbox_exists(name: &str) -> bool {
     sandbox_status(name).is_some()
 }
 
-/// Parse `heyvm list` output and return the STATUS value for the given sandbox name.
+/// Parse `heyvm list --all` output and return the STATUS value for the given
+/// sandbox name. Uses the all-inclusive listing (not running-only) so a stopped
+/// or synced/pulled sandbox is still detected — otherwise it looks like it
+/// doesn't exist and the UI offers to (re)create a VM that already holds data.
 pub fn sandbox_status(name: &str) -> Option<String> {
-    let output = list_sandboxes().ok()?;
+    let output = list_all_sandboxes().ok()?;
     for line in output.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
         // Table rows: NAME  ID  STATUS  BACKEND  TYPE / IMAGE

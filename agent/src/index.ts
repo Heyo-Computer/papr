@@ -76,6 +76,50 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
+// Streaming chat over Server-Sent Events. Emits newline-delimited `data: {json}`
+// frames: {type:"delta"|"thinking", text}, {type:"tool_start"|"tool_end", ...},
+// {type:"error", message}, and a terminal {type:"done"}.
+app.post("/chat/stream", async (req, res) => {
+  const message = (req.body?.message as string | undefined) ?? "";
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  // Abort the in-flight turn if the client goes away mid-stream.
+  req.on("close", () => {
+    void agent.abort();
+  });
+
+  try {
+    if (!message) {
+      send({ type: "error", message: "Missing 'message' parameter" });
+    } else if (/^\s*\/search\s+/i.test(message)) {
+      // Deterministic /search runs in code and returns a single summary.
+      const msg = await agent.chat(message);
+      if (msg.content) send({ type: "delta", text: msg.content });
+    } else {
+      await agent.stream(message, (ev) => {
+        if (ev.type === "message_update") {
+          const e = ev.assistantMessageEvent;
+          if (e.type === "text_delta") send({ type: "delta", text: e.delta });
+          else if (e.type === "thinking_delta") send({ type: "thinking", text: e.delta });
+        } else if (ev.type === "tool_execution_start") {
+          send({ type: "tool_start", toolName: ev.toolName, toolCallId: ev.toolCallId });
+        } else if (ev.type === "tool_execution_end") {
+          send({ type: "tool_end", toolName: ev.toolName, toolCallId: ev.toolCallId, isError: ev.isError });
+        }
+      });
+    }
+  } catch (err: unknown) {
+    send({ type: "error", message: (err as Error).message });
+  } finally {
+    send({ type: "done" });
+    res.end();
+  }
+});
+
 // ACP JSON-RPC endpoint
 app.post("/rpc", async (req, res) => {
   const request = req.body as AcpRequest;
@@ -119,6 +163,39 @@ app.post("/rpc", async (req, res) => {
       case "agent/clear": {
         agent.clearHistory();
         res.json(makeResponse(request.id, { cleared: true }));
+        break;
+      }
+
+      case "agent/abort": {
+        await agent.abort();
+        res.json(makeResponse(request.id, { aborted: true }));
+        break;
+      }
+
+      // ── Plugins (Pi package library) ──
+
+      case "plugins/list": {
+        res.json(makeResponse(request.id, await agent.listPlugins()));
+        break;
+      }
+
+      case "plugins/install": {
+        const source = p?.source as string | undefined;
+        if (!source) {
+          res.json(makeError(request.id, -32602, "Missing 'source' parameter"));
+          return;
+        }
+        res.json(makeResponse(request.id, await agent.installPlugin(source, !!p?.local)));
+        break;
+      }
+
+      case "plugins/remove": {
+        const source = p?.source as string | undefined;
+        if (!source) {
+          res.json(makeError(request.id, -32602, "Missing 'source' parameter"));
+          return;
+        }
+        res.json(makeResponse(request.id, await agent.removePlugin(source, !!p?.local)));
         break;
       }
 

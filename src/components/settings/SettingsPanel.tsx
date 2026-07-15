@@ -9,6 +9,7 @@ import {
   listVms, useExistingVm,
 } from "../../api/commands";
 import { themeList, setTheme } from "../../theme/ThemeProvider";
+import { PluginsPanel } from "../plugins/PluginsPanel";
 import type { AgentConfig, CalendarConfig, CalendarStatus, MigrationStatsResult, VmInfo } from "../../types";
 
 const MODELS = [
@@ -607,6 +608,11 @@ export function SettingsPanel() {
           {calMessage && (
             <div class="settings-hint" style={{ marginTop: "4px" }}>{calMessage}</div>
           )}
+
+          {/* ── Plugins section (Pi package library) ── */}
+          <div class="settings-divider" />
+          <div class="settings-section-label">Plugins</div>
+          <PluginsPanel />
 
           {/* ── Data / migration section ── */}
           <div class="settings-divider" />

@@ -236,6 +236,22 @@ export interface CalendarEvent {
   end_time: string;
 }
 
+// A book/list create queued locally because the sandbox agent was offline.
+// `local_id`/`created_at` are generated in the webview; `fields` is empty for books.
+export interface PendingCreate {
+  local_id: string;
+  kind: "book" | "list";
+  name: string;
+  fields: ListField[];
+  created_at: string;
+}
+
+export interface FlushResult {
+  synced: number;
+  remaining: number;
+  errors: string[];
+}
+
 export interface StatusInfo {
   agent_status: string;
   sandbox_status: string;

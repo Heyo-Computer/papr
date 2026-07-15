@@ -1,7 +1,4 @@
-import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile, listDirectory } from "./tools/file.js";
-import { execCommand } from "./tools/shell.js";
 import { saveTodoSpec, updateTodo, getTodosForDate, getBacklogText, addBacklogItem, moveBacklogToDay } from "./tools/todo.js";
 import { saveArtifact, listArtifacts } from "./tools/artifact.js";
 import { getCalendarEvents, getCalendarEventById } from "./tools/calendar.js";
@@ -26,50 +23,11 @@ import {
   updatePageMeta,
 } from "./tools/books.js";
 import type { AgentMessage } from "./types.js";
-import type { ChatProvider, ProviderMessage, ToolResult, ToolSchema } from "./providers/types.js";
-import { AnthropicProvider, wrapUserMessage as anthropicUser } from "./providers/anthropic.js";
-import { OpenRouterProvider, wrapUserMessage as openrouterUser } from "./providers/openrouter.js";
-
-const CONFIG_PATH = "/data/config/agent.json";
-
-interface PromptConfig {
-  spec_verbosity: "terse" | "normal" | "detailed";
-  user_context: string;
-}
-
-function loadPromptConfig(): PromptConfig {
-  // Prefer env (passed by the host at agent start) — under KVM the host can't
-  // update the seeded /data/config/agent.json. Fall back to the config file.
-  const fromFile = (() => {
-    try {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
-    } catch {
-      return {};
-    }
-  })();
-
-  const rawVerbosity = process.env.SPEC_VERBOSITY ?? fromFile.spec_verbosity;
-  const verbosity = ["terse", "normal", "detailed"].includes(rawVerbosity)
-    ? (rawVerbosity as PromptConfig["spec_verbosity"])
-    : "normal";
-  const userContext =
-    process.env.USER_CONTEXT ??
-    (typeof fromFile.user_context === "string" ? fromFile.user_context : "");
-
-  return { spec_verbosity: verbosity, user_context: userContext };
-}
-
-function verbosityInstruction(verbosity: PromptConfig["spec_verbosity"]): string {
-  switch (verbosity) {
-    case "terse":
-      return "When writing specs, be brief and to the point. Use minimal headers and bullet points. Skip preamble and obvious context. Aim for the smallest spec that captures the essential information.";
-    case "detailed":
-      return "When writing specs, be thorough. Include relevant context, rationale, edge cases, and step-by-step detail where applicable. Err on the side of more information.";
-    case "normal":
-    default:
-      return "When writing specs, use a balanced level of detail — clear and complete without being exhaustive.";
-  }
-}
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import { toPiTools, type ToolSchema } from "./pi/toolAdapter.js";
+import { PiRuntime } from "./pi/session.js";
+import { PluginManager, type PluginInfo } from "./pi/plugins.js";
+import { buildSystemPrompt, loadPromptConfig, searchSummarySystem, STRUCTURE_NOTE_SYSTEM } from "./pi/prompt.js";
 
 /** Render index results into a compact, model-readable block for the /search summary.
  * Each line leads with the result's `token` so the model can echo it verbatim as a chip. */
@@ -86,52 +44,10 @@ function renderResultsForModel(results: IndexDoc[], query: string): string {
   return `Search query: "${query}"\n\nResults (${results.length}):\n${lines.join("\n")}`;
 }
 
+// NOTE: low-level file/shell tools (read_file, write_file, list_directory,
+// exec_command) are intentionally omitted — Pi's built-in read/write/bash tools
+// cover them (see BUILTIN_TOOLS in pi/session.ts).
 const tools: ToolSchema[] = [
-  {
-    name: "read_file",
-    description: "Read the contents of a file. The host data directory is mounted at /data.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "File path under /data (e.g., /data/storage/2026/04/05/day.json)" },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "write_file",
-    description: "Write content to a file under /data.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "File path under /data" },
-        content: { type: "string", description: "File content" },
-      },
-      required: ["path", "content"],
-    },
-  },
-  {
-    name: "list_directory",
-    description: "List files and directories under /data.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Directory path under /data" },
-      },
-      required: ["path"],
-    },
-  },
-  {
-    name: "exec_command",
-    description: "Execute a shell command in the sandbox environment.",
-    parameters: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Shell command to execute" },
-      },
-      required: ["command"],
-    },
-  },
   {
     name: "save_spec",
     description:
@@ -550,38 +466,60 @@ const tools: ToolSchema[] = [
   },
 ];
 
-function pickProvider(): ChatProvider {
-  const which = (process.env.LLM_PROVIDER ?? "anthropic").toLowerCase();
-  if (which === "openrouter") return new OpenRouterProvider();
-  return new AnthropicProvider();
-}
-
-function wrapUser(provider: ChatProvider, text: string): ProviderMessage {
-  return provider.name === "openrouter" ? openrouterUser(text) : anthropicUser(text);
-}
-
 export class Agent {
-  // Provider is constructed lazily on first chat so the storage server can boot
-  // (and serve all RPCs) even when no LLM API key is configured. Constructing it
-  // eagerly throws when ANTHROPIC_API_KEY/OPENROUTER_API_KEY is unset.
-  private _provider?: ChatProvider;
-  private history: ProviderMessage[] = [];
+  // The Pi runtime builds its model lazily on first chat so the storage server
+  // can boot (and serve all non-chat RPCs) even when no API key is configured.
+  private runtime = new PiRuntime();
+  // The domain tools, adapted to Pi custom tools backed by executeTool.
+  private customTools = toPiTools(tools, (name, input) => this.executeTool(name, input));
+  // One persistent Pi session per day, lazily created and keyed by YYYY-MM-DD.
+  private sessions = new Map<string, AgentSession>();
+  // Pi package/plugin manager (extensions, skills, prompt templates).
+  private plugins = new PluginManager(this.runtime);
 
   constructor() {}
 
-  private get provider(): ChatProvider {
-    if (!this._provider) {
-      // Check the key up front — the SDK clients construct fine without one and
-      // only fail at request time, so this gives a clear message instead.
-      const which = (process.env.LLM_PROVIDER ?? "anthropic").toLowerCase();
-      const keyVar = which === "openrouter" ? "OPENROUTER_API_KEY" : "ANTHROPIC_API_KEY";
-      if (!process.env[keyVar]) {
-        throw new Error("No API key configured — set your API key in Settings to use chat.");
-      }
-      this._provider = pickProvider();
-      console.log(`Agent using provider=${this._provider.name} model=${this._provider.model}`);
+  // ── Plugins ──────────────────────────────────────────────────────────────
+  // After install/remove, dispose all live sessions so the next message rebuilds
+  // them with a fresh resource loader that discovers the new packages/skills.
+
+  private reloadPlugins(): void {
+    for (const s of this.sessions.values()) s.dispose();
+    this.sessions.clear();
+  }
+
+  listPlugins(): Promise<PluginInfo> {
+    return this.plugins.list();
+  }
+
+  async installPlugin(source: string, local: boolean): Promise<PluginInfo> {
+    await this.plugins.install(source, local);
+    this.reloadPlugins();
+    return this.plugins.list();
+  }
+
+  async removePlugin(source: string, local: boolean): Promise<PluginInfo> {
+    await this.plugins.remove(source, local);
+    this.reloadPlugins();
+    return this.plugins.list();
+  }
+
+  private today(): string {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  /** Get (or lazily build) the chat session for a day. */
+  async session(day = this.today()): Promise<AgentSession> {
+    let s = this.sessions.get(day);
+    if (!s) {
+      s = await this.runtime.buildChatSession({
+        systemPrompt: buildSystemPrompt(loadPromptConfig(), day),
+        customTools: this.customTools,
+        sessionId: `paperagent-${day}`,
+      });
+      this.sessions.set(day, s);
     }
-    return this._provider;
+    return s;
   }
 
   async chat(userMessage: string): Promise<AgentMessage> {
@@ -594,98 +532,41 @@ export class Agent {
       if (query) return this.searchAndSummarize(query);
     }
 
-    this.history.push(wrapUser(this.provider, userMessage));
-
-    const today = new Date().toISOString().slice(0, 10);
-    const promptConfig = loadPromptConfig();
-
-    let systemPrompt =
-      `You are a helpful agent for a todo/task management app. Today is ${today}.\n` +
-      "The user's data directory is mounted at /data. The storage structure is:\n" +
-      "  /data/storage/YYYY/MM/DD/day.json   — day's todos\n" +
-      "  /data/storage/YYYY/MM/DD/specs/{todo-id}.md — spec for a todo\n" +
-      "  /data/storage/backlog.json — the general (undated) backlog list\n" +
-      "  /data/storage/backlog/specs/{item-id}.md — spec for a backlog item\n" +
-      "  /data/storage/lists/{list-id}.json — a list (its fields + items)\n" +
-      "  /data/storage/books/{book-id}/book.json — a book's metadata + page table of contents\n" +
-      "  /data/storage/books/{book-id}/pages/{page-id}.md — a book page's markdown content\n" +
-      "  /data/artifacts/ — reusable files\n\n" +
-      "The backlog is the user's general todo list with no due date. Use get_backlog to read it. " +
-      "When the user wants to schedule a backlog item for a specific day, use move_backlog_to_day.\n" +
-      "When the user mentions a todo with @[title](id:UUID|date:YYYY-MM-DD), use the UUID and date directly.\n" +
-      "When the user mentions an artifact with @[name](artifact:relative/path), it lives at " +
-      "/data/artifacts/relative/path. If it's a file, use read_file to read its contents; if it's a " +
-      "folder, use list_directory to see what's inside (then read_file on specific files) when relevant.\n" +
-      "When the user mentions a list with @[name](list:<listId>) or @[name](list:<listId>/<itemId>), " +
-      "use the list/item tools with those ids. When the user mentions a book with @[name](book:<bookId>) " +
-      "or @[name](book:<bookId>/<pageId>), use the book/page tools with those ids.\n" +
-      "When asked to create a spec for a todo, use the save_spec tool — don't write files manually.\n" +
-      "When asked to save anything to artifacts (a script, snippet, note, reference, or any file " +
-      "the user wants to keep around), you MUST use the save_artifact tool — NOT write_file. " +
-      "write_file is for low-level file operations only; save_artifact updates the artifact index " +
-      "so the file appears in the user's Artifacts tab. " +
-      "save_spec is for todo-attached docs; save_artifact is for standalone reusable files.\n" +
-      "When you need to look up todos, use the get_todos tool.\n" +
-      "Lists are structured tables and books are collections of markdown pages. You MUST use the " +
-      "list_*/book_* tools (list_lists, get_list, create_list, add_list_item, update_list_item, " +
-      "delete_list_item, list_books, get_book, create_book, add_book_page, get_book_page, " +
-      "update_book_page) to work with them — NOT write_file. Those tools keep the indexes in sync so the " +
-      "changes appear in the Lists and Books tabs. Look up list/item and book/page ids with get_list / " +
-      "get_book before updating, deleting, or linking.\n" +
-      "Todos can be linked to list items and book pages. Use link_todo_to_list_item / link_todo_to_book_page " +
-      "(and the unlink_* variants) to connect them — the link is written onto both sides. Pass the todo's date " +
-      "(YYYY-MM-DD), or an empty string for a backlog item.\n" +
-      "To create a brand-new page or item FROM a todo (e.g. \"log my standup notes as a page in my standup book\"), " +
-      "look up the todo with get_todos then call create_page_from_todo / create_list_item_from_todo — these create " +
-      "the page/item seeded from the todo and link both sides in one step.\n" +
-      "When the user references a meeting or calendar event, use calendar_events to list events in a " +
-      "date window and calendar_event to fetch full details (attendees, description, meeting link). " +
-      "calendar_events only lists a window of cached events — to find a PAST meeting or look one up by " +
-      "keyword/attendee (e.g. \"when did I last meet Hugo\"), use search_content, which indexes all " +
-      "cached calendar events including past ones. " +
-      "To create a spec for an event, look up the matching todo with get_todos, then call save_spec.\n" +
-      "When the user references something vaguely or asks where/find/which/when something is across their " +
-      "todos, lists, books, artifacts, or calendar events, use the search_content tool. You MUST echo each result's " +
-      "`token` (the @[..] string) verbatim when presenting it, so it renders as a clickable chip. " +
-      "Never tell the user you are unable to search a category of their data (e.g. past calendar events) — " +
-      "search_content indexes all of it; call it and answer from the results. If it returns nothing, say " +
-      "nothing was found rather than claiming you lack access.\n" +
-      "Be concise and action-oriented. Prefer using tools over asking the user for information you can look up.\n\n" +
-      verbosityInstruction(promptConfig.spec_verbosity);
-
-    if (promptConfig.user_context.trim()) {
-      systemPrompt +=
-        "\n\nThe user has provided this context about themselves — use it to tailor specs and responses:\n" +
-        promptConfig.user_context.trim();
-    }
-
-    let turn = await this.provider.chat(systemPrompt, this.history, tools);
-    let accumulatedText = turn.text;
-
-    while (turn.toolCalls.length > 0) {
-      const results: ToolResult[] = [];
-      for (const tc of turn.toolCalls) {
-        const result = await this.executeTool(tc.name, tc.input as Record<string, string>);
-        results.push({ toolCallId: tc.id, content: result });
+    // Non-streaming path: run the turn and synthesize the assistant message from
+    // the collected text deltas (Pi's prompt() resolves void; output is events).
+    let content = "";
+    await this.stream(userMessage, (ev) => {
+      if (ev.type === "message_update" && ev.assistantMessageEvent.type === "text_delta") {
+        content += ev.assistantMessageEvent.delta;
       }
-
-      this.appendAssistant(turn.rawAssistant);
-      this.history.push(this.provider.buildToolResultMessage(results));
-
-      turn = await this.provider.chat(systemPrompt, this.history, tools);
-      if (turn.text) {
-        accumulatedText = accumulatedText ? `${accumulatedText}\n${turn.text}` : turn.text;
-      }
-    }
-
-    this.appendAssistant(turn.rawAssistant);
+    });
 
     return {
       id: randomUUID(),
       role: "assistant",
-      content: accumulatedText,
+      content: content.trim(),
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /** Run a prompt on the current day's session, forwarding every Pi session event
+   *  to `onEvent`. Used by both the non-streaming chat() above and the SSE
+   *  streaming endpoint. The subscription is scoped to this turn. */
+  async stream(userMessage: string, onEvent: (ev: AgentSessionEvent) => void): Promise<void> {
+    const session = await this.session();
+    const unsub = session.subscribe(onEvent);
+    try {
+      await session.prompt(userMessage);
+    } finally {
+      unsub();
+    }
+  }
+
+  /** Abort the in-flight turn for the current day's session, if any. Leaves the
+   *  session (and the process) alive — unlike agent/stop which exits. */
+  async abort(): Promise<void> {
+    const s = this.sessions.get(this.today());
+    if (s) await s.abort();
   }
 
   /** Deterministic search skill (/search): query the index in code, then make a
@@ -694,28 +575,15 @@ export class Agent {
    * deterministic and never silently skipped or editorialized away. */
   private async searchAndSummarize(query: string): Promise<AgentMessage> {
     const results = searchIndex(query, { limit: 10 });
-
-    const today = new Date().toISOString().slice(0, 10);
-    const searchSystem =
-      `You are a helpful assistant for a todo/task management app. Today is ${today}. ` +
-      "You are presenting the results of a deterministic search across the user's data — " +
-      "todos, specs, backlog, lists, books, artifacts, and calendar events (including PAST " +
-      "meetings). The results below were retrieved directly from the index, not by you, and " +
-      "are authoritative and complete. Summarize them for the user in 1-3 sentences and echo " +
-      "each result's `token` verbatim so it renders as a clickable chip. NEVER claim you can't " +
-      "search something (e.g. past calendar events) — if it isn't in the results, it simply " +
-      "wasn't found. If there are no results, say so plainly.";
-
-    // Push the query + retrieved results as the user turn so the summary call has the
-    // results in context and the conversation stays well-formed for follow-ups.
-    this.history.push(wrapUser(this.provider, renderResultsForModel(results, query)));
-    const turn = await this.provider.chat(searchSystem, this.history, []);
-    this.appendAssistant(turn.rawAssistant);
+    const content = await this.runtime.oneShot(
+      searchSummarySystem(this.today()),
+      renderResultsForModel(results, query),
+    );
 
     return {
       id: randomUUID(),
       role: "assistant",
-      content: turn.text,
+      content,
       timestamp: new Date().toISOString(),
     };
   }
@@ -729,27 +597,8 @@ export class Agent {
     const clean = (transcript ?? "").trim();
     if (!clean) return { title: "Voice note", markdown: "" };
 
-    const system =
-      "You convert a raw voice-note transcript into a clean, well-structured " +
-      "Markdown document for a notebook page. The transcript is dictated speech: it " +
-      "may ramble, repeat itself, include filler words (um, uh, like, you know), " +
-      "false starts, and self-corrections.\n" +
-      "Your job:\n" +
-      "- Strip filler, repetition, and verbal noise while keeping ALL real content and intent.\n" +
-      "- Impose structure: a single top-level '# ' title on the first line that captures the " +
-      "subject, then '## ' section headers, bulleted or numbered lists, and short paragraphs " +
-      "as the content warrants.\n" +
-      "- Turn things the speaker enumerates ('first… second… also…', shopping/todo style runs) " +
-      "into proper Markdown lists.\n" +
-      "- Preserve the speaker's wording and meaning — do NOT invent facts, answer questions the " +
-      "transcript poses, or add commentary. This is transcription cleanup, NOT a chat reply.\n" +
-      "- Fix obvious transcription, grammar, and punctuation slips.\n" +
-      "Respond with ONLY the Markdown document — no preamble, no explanation, no code fences.";
-
-    // Stateless: pass a throwaway one-message history; never touch this.history.
-    const turn = await this.provider.chat(system, [wrapUser(this.provider, `Raw transcript:\n\n${clean}`)], []);
-
-    let markdown = turn.text.trim();
+    // Stateless tool-less one-shot — never touches a persistent chat session.
+    let markdown = (await this.runtime.oneShot(STRUCTURE_NOTE_SYSTEM, `Raw transcript:\n\n${clean}`)).trim();
     // Strip an accidental ```markdown … ``` fence if the model wrapped its output.
     markdown = markdown.replace(/^```(?:markdown|md)?\s*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
     if (!markdown) markdown = clean; // never lose the note if structuring returns nothing
@@ -766,22 +615,11 @@ export class Agent {
     return { title: title || "Voice note", markdown };
   }
 
-  private appendAssistant(raw: unknown) {
-    // `raw` is a ProviderMessage that the provider returned in ChatTurn.rawAssistant
-    this.history.push(raw as ProviderMessage);
-  }
-
-  private async executeTool(name: string, input: Record<string, string>): Promise<string> {
-    try {
+  // Dispatch a domain tool by name. Throws on failure so Pi marks the tool
+  // result as an error (the wrapper in pi/toolAdapter.ts relays the message).
+  private async executeTool(name: string, input: Record<string, any>): Promise<string> {
+    {
       switch (name) {
-        case "read_file":
-          return readFile(input.path);
-        case "write_file":
-          return writeFile(input.path, input.content);
-        case "list_directory":
-          return listDirectory(input.path);
-        case "exec_command":
-          return execCommand(input.command);
         case "save_spec":
           return saveTodoSpec(input.date, input.todo_id, input.content);
         case "update_todo":
@@ -877,15 +715,19 @@ export class Agent {
           return JSON.stringify(searchIndex(input.query, { kinds, limit }));
         }
         default:
-          return `Unknown tool: ${name}`;
+          throw new Error(`Unknown tool: ${name}`);
       }
-    } catch (err: unknown) {
-      const error = err as Error;
-      return `Tool error: ${error.message}`;
     }
   }
 
+  /** Reset the conversation: dispose the current day's session so the next
+   *  message starts a fresh one. */
   clearHistory() {
-    this.history = [];
+    const day = this.today();
+    const s = this.sessions.get(day);
+    if (s) {
+      s.dispose();
+      this.sessions.delete(day);
+    }
   }
 }

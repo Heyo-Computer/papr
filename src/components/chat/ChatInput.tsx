@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "preact/hooks";
 import { days, allArtifacts, allLists, allBooks } from "../../state/store";
 import { useVoiceInput, voiceState, voiceError } from "../../hooks/useVoiceInput";
 import { describeImage } from "../../api/commands";
-import { SKILLS, type Skill } from "../../skills";
+import { skills, type Skill } from "../../skills";
 import type { TodoItem, Artifact, ListSummary, BookSummary } from "../../types";
 
 interface ChatInputProps {
@@ -210,7 +210,7 @@ export function ChatInput({ onSend, disabled }: ChatInputProps) {
   const options = showMentions ? getMentionOptions() : [];
 
   const skillOptions: Skill[] = showSkills
-    ? SKILLS.filter((s) => s.name.startsWith(skillQuery.toLowerCase()))
+    ? skills.value.filter((s) => s.name.startsWith(skillQuery.toLowerCase()))
     : [];
 
   // Autocomplete the textarea to a literal "/name " prefix. Unlike mentions this
