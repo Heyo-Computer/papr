@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./transport";
 import type { DayEntry, TodoItem, AgentMessage, Artifact, Theme, AgentConfig, StatusInfo, CalendarConfig, CalendarStatus, CalendarEvent, DeploymentInfo, NetworkServiceInfo, Backlog, MoveBacklogResult, List, ListField, ListItem, ListSummary, Book, BookSummary, MigrationCounts, MigrationStatsResult, VmInfo, PendingCreate, FlushResult } from "../types";
 
 // Storage commands

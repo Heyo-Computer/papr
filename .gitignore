@@ -18,6 +18,10 @@ agent/dist
 agent/node_modules
 src-tauri/agent-bundle
 
+# Web shell build output (frontend bundle + compiled server)
+web/public
+web/node_modules
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

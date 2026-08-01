@@ -1,0 +1,17 @@
+# Keep the build context small — image builds (web/Dockerfile.firecracker) run
+# from the repo root and install their own dependencies.
+.git
+.github
+node_modules
+**/node_modules
+dist
+**/dist
+web/public
+src-tauri/target
+src-tauri/gen
+src-tauri/agent-bundle
+.agentbox-worktrees
+.codegraph
+.printer
+marketing
+*.log

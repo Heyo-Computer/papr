@@ -8,6 +8,7 @@ import {
   migrateLocalToSandbox, migrationStats, exportSandboxToLocal,
   listVms, useExistingVm,
 } from "../../api/commands";
+import { isWebMode } from "../../api/transport";
 import { themeList, setTheme } from "../../theme/ThemeProvider";
 import { PluginsPanel } from "../plugins/PluginsPanel";
 import type { AgentConfig, CalendarConfig, CalendarStatus, MigrationStatsResult, VmInfo } from "../../types";
@@ -80,6 +81,49 @@ const DEFAULT_CAL_CONFIG: CalendarConfig = {
   calendar_id: "",
 };
 
+/** The redirect URI this shell will send Google to — must be registered on the
+ *  OAuth client or Google rejects the flow with redirect_uri_mismatch. */
+function oauthRedirectUri(): string {
+  return isWebMode
+    ? `${window.location.origin}/api/calendar/callback`
+    : "http://localhost:19284/callback";
+}
+
+/**
+ * Run the Google consent screen in a popup and resolve once it's done (web mode
+ * only). The server's callback page posts back on success and closes itself; we
+ * also watch for the window being closed manually, so a user who abandons the
+ * flow doesn't leave the button spinning forever.
+ */
+function runOAuthPopup(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const popup = window.open(url, "google-calendar-oauth", "width=520,height=680");
+    if (!popup) {
+      reject(new Error("Popup blocked — allow popups for this site and try again."));
+      return;
+    }
+
+    const finish = () => {
+      window.removeEventListener("message", onMessage);
+      clearInterval(closedPoll);
+      resolve();
+    };
+
+    const onMessage = (e: MessageEvent) => {
+      // Same-origin only: the callback page is served by our own server.
+      if (e.origin !== window.location.origin) return;
+      if ((e.data as { type?: string })?.type === "calendar-oauth") finish();
+    };
+    window.addEventListener("message", onMessage);
+
+    // The popup is cross-origin while it's on accounts.google.com, so `closed`
+    // is the only thing we can read about it.
+    const closedPoll = window.setInterval(() => {
+      if (popup.closed) finish();
+    }, 500);
+  });
+}
+
 export function SettingsPanel() {
   const [config, setConfig] = useState<AgentConfig>(DEFAULT_CONFIG);
   const [calConfig, setCalConfig] = useState<CalendarConfig>(DEFAULT_CAL_CONFIG);
@@ -132,8 +176,10 @@ export function SettingsPanel() {
   }, []);
 
   // Load migration counts when the panel opens (best-effort; needs the agent up).
+  // Both this and the VM list are host-only, and their sections are hidden in
+  // web mode, so don't bother asking there.
   useEffect(() => {
-    if (!settingsOpen.value) return;
+    if (!settingsOpen.value || isWebMode) return;
     migrationStats().then(setMigStats).catch(() => setMigStats(null));
     refreshVms();
   }, [settingsOpen.value]);
@@ -190,8 +236,17 @@ export function SettingsPanel() {
     try {
       // Save config first so the backend has the credentials
       await setCalendarConfig(calConfig);
-      const msg = await connectGoogleCalendar();
-      setCalMessage(msg);
+      const result = await connectGoogleCalendar();
+      if (isWebMode) {
+        // In the browser, `connectGoogleCalendar` returns a URL to open rather
+        // than doing the flow itself — the consent screen has to run in a real
+        // window, and the server catches the redirect coming back.
+        setCalMessage("Finish signing in to Google in the popup window…");
+        await runOAuthPopup(result);
+        setCalMessage("");
+      } else {
+        setCalMessage(result);
+      }
       getCalendarStatus().then(setCalStatus).catch(() => {});
     } catch (err) {
       setCalMessage(`${err}`);
@@ -346,6 +401,11 @@ export function SettingsPanel() {
             </>
           )}
 
+          {/* Sandbox provisioning and cloud deploy drive heyvm on the host
+              machine — the web shell talks to an agent that is already up, so
+              none of it applies there. */}
+          {!isWebMode && (
+          <>
           <label class="settings-field">
             <span class="settings-label">VM Name</span>
             <input
@@ -482,6 +542,9 @@ export function SettingsPanel() {
               ))}
             </select>
           </label>
+          </>
+          )}
+
           {/* ── Speech section ── */}
           <div class="settings-divider" />
           <div class="settings-section-label">Speech</div>
@@ -541,9 +604,19 @@ export function SettingsPanel() {
             </span>
           </label>
 
-          {/* ── Calendar section ── */}
+          {/* ── Calendar section ──
+              The agent owns the integration in both shells; only where Google
+              redirects back differs, and that URL has to be registered in the
+              Google Cloud project, so we spell it out. */}
           <div class="settings-divider" />
           <div class="settings-section-label">Google Calendar</div>
+
+          <div class="settings-field">
+            <span class="settings-hint">
+              Add this as an authorized redirect URI on your OAuth client:{" "}
+              <code>{oauthRedirectUri()}</code>
+            </span>
+          </div>
 
           <label class="settings-field">
             <span class="settings-label">OAuth Client ID</span>
@@ -614,7 +687,11 @@ export function SettingsPanel() {
           <div class="settings-section-label">Plugins</div>
           <PluginsPanel />
 
-          {/* ── Data / migration section ── */}
+          {/* ── Data / migration section ──
+              Both directions move data between the sandbox and *this device's*
+              ~/.todo, which the browser has no access to. */}
+          {!isWebMode && (
+          <>
           <div class="settings-divider" />
           <div class="settings-section-label">Data</div>
 
@@ -642,6 +719,8 @@ export function SettingsPanel() {
               <div class="settings-hint" style={{ marginTop: "4px" }}>{migMessage}</div>
             )}
           </div>
+          </>
+          )}
         </div>
 
         <div class="settings-footer">

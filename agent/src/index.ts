@@ -63,6 +63,7 @@ import {
 import { importBundle, migrationStats, exportBundle } from "./tools/migration.js";
 import type { MigrationBundle } from "./tools/migration.js";
 import { saveEvents } from "./tools/calendar.js";
+import * as gcal from "./tools/google-calendar.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 8080);
@@ -505,11 +506,78 @@ app.post("/rpc", async (req, res) => {
         break;
       }
 
-      // ── Calendar cache (host fetches via OAuth, agent owns the cache file) ──
+      // ── Google Calendar ──
+      //
+      // The agent owns the whole integration: OAuth credentials and tokens live
+      // in /data/config, and both shells drive it through these methods. Only
+      // the redirect the user comes back to differs, so it's a parameter.
 
       case "calendar/save_events": {
         const events = (p.events as Parameters<typeof saveEvents>[0]) ?? [];
         res.json(makeResponse(request.id, saveEvents(events)));
+        break;
+      }
+
+      case "calendar/get_config": {
+        res.json(makeResponse(request.id, gcal.getConfig()));
+        break;
+      }
+
+      case "calendar/set_config": {
+        res.json(makeResponse(request.id, gcal.setConfig(p.config as gcal.CalendarConfig)));
+        break;
+      }
+
+      case "calendar/status": {
+        res.json(makeResponse(request.id, gcal.status()));
+        break;
+      }
+
+      case "calendar/auth_url": {
+        const redirectUri = p.redirect_uri as string | undefined;
+        if (!redirectUri) {
+          res.json(makeError(request.id, -32602, "Missing 'redirect_uri' parameter"));
+          return;
+        }
+        res.json(makeResponse(request.id, { url: gcal.authUrl(redirectUri) }));
+        break;
+      }
+
+      case "calendar/exchange_code": {
+        const code = p.code as string | undefined;
+        const redirectUri = p.redirect_uri as string | undefined;
+        if (!code || !redirectUri) {
+          res.json(makeError(request.id, -32602, "Missing 'code' or 'redirect_uri' parameter"));
+          return;
+        }
+        res.json(makeResponse(request.id, await gcal.exchangeCode(code, redirectUri)));
+        break;
+      }
+
+      case "calendar/disconnect": {
+        res.json(makeResponse(request.id, gcal.disconnect()));
+        break;
+      }
+
+      case "calendar/fetch_events": {
+        const start = (p.start_offset as number) ?? 0;
+        const end = (p.end_offset as number) ?? 30;
+        res.json(makeResponse(request.id, await gcal.fetchEventsRange(start, end)));
+        break;
+      }
+
+      case "calendar/sync_to_todos": {
+        res.json(makeResponse(request.id, await gcal.syncToTodos()));
+        break;
+      }
+
+      // One-shot adoption of credentials from an older desktop build that kept
+      // them on the host. Never overwrites what's already here.
+      case "calendar/import_local": {
+        res.json(makeResponse(request.id, gcal.importLocal(
+          p.config as Partial<gcal.CalendarConfig> | undefined,
+          p.tokens as Partial<gcal.CalendarTokens> | undefined,
+        )));
         break;
       }
 

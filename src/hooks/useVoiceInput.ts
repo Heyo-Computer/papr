@@ -1,7 +1,7 @@
 import { signal } from "@preact/signals";
 import { useEffect, useRef, useCallback } from "preact/hooks";
-import { transcribeFile } from "../api/commands";
-import { startRecording as micStart, stopRecording as micStop } from "tauri-plugin-mic-recorder-api";
+import { startRecording as micStart, stopAndTranscribe } from "../api/mic";
+import { isWebMode } from "../api/transport";
 import { register } from "@tauri-apps/plugin-global-shortcut";
 
 export type VoiceState = "idle" | "recording" | "transcribing";
@@ -17,6 +17,9 @@ const toggleRef = { current: () => {} };
 let shortcutRegistered = false;
 async function ensureShortcutRegistered() {
   if (shortcutRegistered) return;
+  // No OS-level shortcut registration in the browser — the DOM fallback below
+  // covers Ctrl+H while the page has focus.
+  if (isWebMode) return;
   shortcutRegistered = true;
   try {
     await register("Ctrl+H", (event) => {
@@ -46,8 +49,7 @@ export function useVoiceInput(onTranscription: (text: string) => void) {
     voiceError.value = "";
 
     try {
-      const filePath = await micStop();
-      const text = await transcribeFile(filePath);
+      const text = await stopAndTranscribe();
       onTranscriptionRef.current(text.trim());
     } catch (e) {
       voiceError.value = `${e}`;

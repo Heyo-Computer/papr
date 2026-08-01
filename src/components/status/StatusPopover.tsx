@@ -8,7 +8,7 @@ import {
   connectNetwork, listNetworkServices,
   listSandboxes, getAgentConfig, setAgentConfig, updateAgent,
 } from "../../api/commands";
-import { listen } from "@tauri-apps/api/event";
+import { listen, isWebMode } from "../../api/transport";
 import type { StatusInfo, CalendarStatus, DeploymentInfo, NetworkServiceInfo } from "../../types";
 
 function StatusDot({ status }: { status: string }) {
@@ -35,7 +35,8 @@ function ModeLabel({ mode }: { mode: string }) {
     mode === "deployed" ? "Deployed" :
     mode === "remote" ? "Remote" :
     mode === "p2p" ? "P2P" :
-    mode === "network" ? "Network" : "Local";
+    mode === "network" ? "Network" :
+    mode === "web" ? "Web" : "Local";
   const cls = mode === "local" ? "disconnected" : "running";
   return (
     <div class="status-row">
@@ -100,9 +101,12 @@ export function StatusPopover() {
       getCalendarStatus()
         .then(setCalStatus)
         .catch(() => setCalStatus(null));
-      listSandboxes()
-        .then(setExistingSandboxes)
-        .catch(() => setExistingSandboxes([]));
+      // Sandbox lifecycle is host-only; the web shell has no heyvm to ask.
+      if (!isWebMode) {
+        listSandboxes()
+          .then(setExistingSandboxes)
+          .catch(() => setExistingSandboxes([]));
+      }
     }
   }, [statusPopoverOpen.value]);
 
@@ -482,8 +486,19 @@ export function StatusPopover() {
             )}
 
             <div class="status-divider" />
-            <Row label="heyvm" value={info.heyvm_available ? "available" : "not found"} status={info.heyvm_available ? "running" : "error"} />
+            {!isWebMode && (
+              <Row label="heyvm" value={info.heyvm_available ? "available" : "not found"} status={info.heyvm_available ? "running" : "error"} />
+            )}
+            {isWebMode && <Row label="Data dir" value={info.data_dir} status={info.data_dir_exists ? "running" : "error"} />}
             {isLocal && <Row label="Data dir" value={info.data_dir} status={info.data_dir_exists ? "running" : "error"} />}
+
+            {/* ── Web mode: the server owns the connection, so the only action
+                   here is re-checking it. ── */}
+            {isWebMode && (
+              <div class="status-actions">
+                <button class="btn btn-sm btn-ghost" onClick={refresh} disabled={loading}>Refresh</button>
+              </div>
+            )}
 
             {/* ── Local mode actions ── */}
             {isLocal && (
@@ -661,8 +676,10 @@ export function StatusPopover() {
               </>
             )}
 
-            {/* ── Connect to remote section (when not already connected out) ── */}
-            {!isDeployed && !isRemote && !isP2p && !isNetwork && (
+            {/* ── Connect to remote section (when not already connected out) ──
+                   Every option here reconfigures the *host's* agent connection,
+                   which the web shell doesn't own — the server picks the agent. */}
+            {!isDeployed && !isRemote && !isP2p && !isNetwork && !isWebMode && (
               <>
                 <div class="status-divider" />
                 <button

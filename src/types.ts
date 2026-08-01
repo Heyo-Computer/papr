@@ -153,7 +153,9 @@ export type ViewTab = "day" | "week" | "month" | "backlog" | "lists" | "books" |
 
 export type AgentStatus = "disconnected" | "starting" | "running" | "error" | "reconnecting";
 
-export type AgentMode = "local" | "deployed" | "remote" | "p2p" | "network";
+// "web" is the browser shell (see `web/`): the UI talks to the agent through
+// the web server, so none of the host-side VM/deploy modes apply.
+export type AgentMode = "local" | "deployed" | "remote" | "p2p" | "network" | "web";
 
 export interface NetworkServiceInfo {
   name: string;
