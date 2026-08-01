@@ -1177,6 +1177,76 @@ body::before {
   border-bottom-left-radius: 3px;
 }
 
+/* Streaming turn: live tool activity + incremental text */
+.chat-tool-activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.chat-tool-chip {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--color-chat-user, rgba(127, 127, 127, 0.15));
+  opacity: 0.85;
+}
+.chat-tool-chip.running {
+  opacity: 0.6;
+}
+.chat-tool-chip.error {
+  color: var(--color-danger, #d9534f);
+}
+.chat-stream-text {
+  white-space: pre-wrap;
+}
+
+/* Plugins panel (Settings → Plugins) */
+.plugins-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.plugins-install-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.plugins-install-row .settings-input {
+  flex: 1;
+}
+.plugins-local-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.plugins-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+.plugins-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.plugins-source {
+  font-size: 13px;
+  word-break: break-all;
+}
+.plugins-meta {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.plugins-error {
+  font-size: 12px;
+  color: var(--color-danger, #d9534f);
+  white-space: pre-wrap;
+}
+
 .chat-bubble .markdown-content h1,
 .chat-bubble .markdown-content h2,
 .chat-bubble .markdown-content h3 {
@@ -2504,6 +2574,30 @@ select.settings-input option {
 
 @keyframes boot-gate-spin {
   to { transform: rotate(360deg); }
+}
+
+.offline-banner {
+  margin: 0 0 10px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--color-warning, #d29922);
+  background: color-mix(in srgb, var(--color-warning, #d29922) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning, #d29922) 35%, transparent);
+}
+
+/* A queued-offline book/list row awaiting sync. */
+.pending-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-warning, #d29922);
+  background: color-mix(in srgb, var(--color-warning, #d29922) 16%, transparent);
 }
 
 .lists-detail-header {

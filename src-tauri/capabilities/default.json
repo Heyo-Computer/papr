@@ -8,7 +8,10 @@
     "opener:default",
     {
       "identifier": "opener:allow-open-path",
-      "allow": [{ "path": "$HOME/.todo/artifacts/**" }]
+      "allow": [
+        { "path": "$HOME/.todo/artifacts/**" },
+        { "path": "$TEMP/todo-artifacts/**" }
+      ]
     },
     "shell:allow-execute",
     "shell:allow-spawn",

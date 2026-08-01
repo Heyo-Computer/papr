@@ -31,11 +31,23 @@ pub async fn send_rpc(
     method: &str,
     params: serde_json::Value,
 ) -> Result<AcpResponse, String> {
+    send_rpc_with_timeout(agent_url, method, params, 120).await
+}
+
+/// Like `send_rpc` but with a caller-chosen per-request timeout. Used for slow
+/// operations such as `plugins/install` (npm/git fetch can exceed the 120s
+/// default).
+pub async fn send_rpc_with_timeout(
+    agent_url: &str,
+    method: &str,
+    params: serde_json::Value,
+    timeout_secs: u64,
+) -> Result<AcpResponse, String> {
     let request = AcpRequest::new(method, params, next_id());
 
     let response = http_client()
         .post(format!("{}/rpc", agent_url))
-        .timeout(Duration::from_secs(120))
+        .timeout(Duration::from_secs(timeout_secs))
         .json(&request)
         .send()
         .await

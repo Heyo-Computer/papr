@@ -109,6 +109,12 @@ export function BacklogPanel() {
     }
   }
 
+  // Completed items belong on a day (see handleToggle), never in the backlog.
+  // Filter them out defensively so a stale completed entry — e.g. left behind if
+  // the move-to-day step failed after the item was marked done — can't resurface
+  // in the list on the next load.
+  const visibleItems = backlog.items.filter((item) => !item.completed);
+
   return (
     <div class="day-panel">
       <div class="day-panel-header">
@@ -119,11 +125,11 @@ export function BacklogPanel() {
       </div>
 
       <div class="day-panel-body">
-        {loading && backlog.items.length === 0 ? (
+        {loading && visibleItems.length === 0 ? (
           <div class="accordion-empty">Loading...</div>
-        ) : backlog.items.length > 0 ? (
+        ) : visibleItems.length > 0 ? (
           <div class="todo-list">
-            {backlog.items.map((item) => (
+            {visibleItems.map((item) => (
               <div
                 key={item.id}
                 class={`todo-item ${highlightId === item.id ? "lists-row-highlight" : ""}`}

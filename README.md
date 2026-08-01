@@ -44,6 +44,21 @@ bun run tauri build
 
 The compiled app will be in `src-tauri/target/release/bundle/`.
 
+## Web Interface
+
+The same UI also runs in a browser, backed by a small Express server instead of
+the Rust/Tauri host. Everything data-related still goes to the sandbox agent.
+
+```bash
+bun run build:web                              # frontend -> web/public, then compile the server
+AGENT_URL=http://127.0.0.1:8080 bun run start:web
+```
+
+Open <http://localhost:3000>. Sandbox management, cloud deploy, P2P/remote
+connect and Google Calendar are desktop-only and hidden in the browser; see
+[web/README.md](web/README.md) for the full split and for the Firecracker image
+that runs the agent and the web UI together in one VM.
+
 ## Project Structure
 
 ```
@@ -108,8 +123,10 @@ Syncs today's calendar events as todos on app startup.
 2. Create a project (or use an existing one)
 3. Enable the **Google Calendar API**
 4. Go to **Credentials** > **Create Credentials** > **OAuth 2.0 Client ID**
-5. Application type: **Desktop app**
-6. Add `http://localhost:19284/callback` as an authorized redirect URI
+5. Application type: **Web application**
+6. Add an authorized redirect URI for the shell you use — Settings shows yours:
+   - desktop app: `http://localhost:19284/callback`
+   - web app: `http://<host>:3000/api/calendar/callback`
 7. Copy the **Client ID** and **Client Secret**
 
 ### Configure in the App
@@ -122,6 +139,10 @@ Syncs today's calendar events as todos on app startup.
 6. Authorize in the browser window that opens
 
 Events sync automatically on each app launch. Use **Sync now** in settings for manual sync.
+
+The integration runs inside the sandbox (`agent/src/tools/google-calendar.ts`),
+so the OAuth credentials and tokens live in the VM with the rest of your data and
+both shells share one connection. Only the redirect URI differs between them.
 
 ## Voice Transcription
 
@@ -146,13 +167,15 @@ sudo apt install gstreamer1.0-pipewire
 
 ## Configuration
 
-All configuration is stored in `~/.todo/config/`:
+| File | Location | Purpose |
+|------|----------|---------|
+| `agent.json` | host `~/.todo/config/` | Anthropic API key, model, VM settings, Heyo cloud config |
+| `calendar.json` | sandbox `/data/config/` | Google OAuth client credentials, calendar ID, sync toggle |
+| `calendar_tokens.json` | sandbox `/data/config/` | OAuth access/refresh tokens (auto-managed) |
 
-| File | Purpose |
-|------|---------|
-| `agent.json` | Anthropic API key, model, VM settings, Heyo cloud config |
-| `calendar.json` | Google OAuth client credentials, calendar ID, sync toggle |
-| `calendar_tokens.json` | OAuth access/refresh tokens (auto-managed) |
+The calendar files live in the sandbox because the integration runs there, so one
+connection serves both the desktop app and the web app. Credentials left in
+`~/.todo/config/` by an older build are adopted into the sandbox on first launch.
 
 ## Development
 

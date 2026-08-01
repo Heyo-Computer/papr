@@ -1,5 +1,5 @@
 import { signal } from "@preact/signals";
-import type { DayEntry, TodoItem, AgentMessage, Artifact, ViewTab, AgentStatus, AgentMode, ListSummary, BookSummary, LinkRef, TodoRef } from "../types";
+import type { DayEntry, TodoItem, AgentMessage, Artifact, ViewTab, AgentStatus, AgentMode, ListSummary, BookSummary, LinkRef, TodoRef, PendingCreate } from "../types";
 
 // Navigation — tabs above the chat
 export const activeTab = signal<ViewTab>("day");
@@ -23,12 +23,41 @@ export function dayByDate(date: string): DayEntry | undefined {
 export const chatMessages = signal<AgentMessage[]>([]);
 export const isAgentLoading = signal<boolean>(false);
 
+// Streaming — the in-flight assistant turn, rendered as a live bubble until the
+// `done` event flushes it into `chatMessages`. `null` when no turn is streaming.
+export interface StreamingTool {
+  name: string;
+  done: boolean;
+  isError?: boolean;
+}
+export interface StreamingMessage {
+  id: string;
+  requestId: string;
+  content: string;
+  thinking: string;
+  tools: StreamingTool[];
+}
+export const streamingMessage = signal<StreamingMessage | null>(null);
+
 // Agent
 export const agentStatus = signal<AgentStatus>("disconnected");
 // Latest provisioning/setup progress message (shown on the boot overlay).
 export const setupProgress = signal<string>("");
 export const agentMode = signal<AgentMode>("local");
 export const deployUrl = signal<string | null>(null);
+
+// True once the user clicks "Continue offline" on the boot gate, letting them
+// into the panels while the sandbox is down. Reset when the agent comes up.
+export const offlineDismissed = signal<boolean>(false);
+
+// Book/list creates queued locally while the agent was offline (mirror of the
+// Rust-side pending_creates.json). Shown as pending rows; flushed on reconnect.
+export const pendingCreates = signal<PendingCreate[]>([]);
+
+// The data backend (sandbox agent) is up and reachable.
+export function isAgentReady(): boolean {
+  return agentStatus.value === "running";
+}
 
 // Artifacts — `artifacts` is the current-folder view (Artifacts panel);
 // `allArtifacts` is the flat recursive list used for @-mention candidates.

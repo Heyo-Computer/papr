@@ -153,7 +153,9 @@ export type ViewTab = "day" | "week" | "month" | "backlog" | "lists" | "books" |
 
 export type AgentStatus = "disconnected" | "starting" | "running" | "error" | "reconnecting";
 
-export type AgentMode = "local" | "deployed" | "remote" | "p2p" | "network";
+// "web" is the browser shell (see `web/`): the UI talks to the agent through
+// the web server, so none of the host-side VM/deploy modes apply.
+export type AgentMode = "local" | "deployed" | "remote" | "p2p" | "network" | "web";
 
 export interface NetworkServiceInfo {
   name: string;
@@ -234,6 +236,22 @@ export interface CalendarEvent {
   summary: string;
   start_time: string;
   end_time: string;
+}
+
+// A book/list create queued locally because the sandbox agent was offline.
+// `local_id`/`created_at` are generated in the webview; `fields` is empty for books.
+export interface PendingCreate {
+  local_id: string;
+  kind: "book" | "list";
+  name: string;
+  fields: ListField[];
+  created_at: string;
+}
+
+export interface FlushResult {
+  synced: number;
+  remaining: number;
+  errors: string[];
 }
 
 export interface StatusInfo {

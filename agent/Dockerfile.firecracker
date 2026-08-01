@@ -25,7 +25,7 @@ RUN printf '%s\n' \
     'export HISTFILE=/root/.bash_history HISTSIZE=2000 HISTCONTROL=ignoredups' \
     > /etc/profile.d/heyvm-prompt.sh
 
-RUN mkdir -p /data/agent /data/logs /data/storage /data/artifacts /data/config
+RUN mkdir -p /data/agent /data/logs /data/storage /data/artifacts /data/config /data/pi
 
 RUN printf '#!/bin/sh\n\
 mount -t proc proc /proc\n\

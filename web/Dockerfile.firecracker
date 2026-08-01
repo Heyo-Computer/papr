@@ -1,0 +1,174 @@
+# Firecracker rootfs for the standalone paperagent web app.
+#
+# Unlike agent/Dockerfile.firecracker — a bare Node runtime that waits for the
+# desktop app to push the agent into /data/agent and start it — this image is
+# self-contained: the agent, the web server and the built frontend are all baked
+# into the rootfs, and the VM comes up serving the UI on port 3000. Point a
+# browser at the guest and you have the whole app, no desktop client involved.
+#
+# Build (context is the repo root, not this directory):
+#
+#   heyvm mvm build --local-only \
+#       -f web/Dockerfile.firecracker -c . -n paperagent-web --size-mb 4096
+#
+# Run:
+#
+#   heyvm create --name paperagent --backend-type firecracker \
+#       --image paperagent-web --memory 2g
+#   heyvm get paperagent               # read guest_ip, then open http://<guest_ip>:3000
+#
+# The guest IP is reachable from the host over the sandbox's tap device. To reach
+# it from elsewhere, `heyvm proxy` (P2P) or `heyvm bind` (public hostname) can
+# expose port 3000.
+#
+# Give it at least 2g. At heyvm's default the web server comes up fine but the
+# Pi SDK the agent runs on gets OOM-killed the moment it loads; the supervisor
+# backs off and logs "SIGKILL usually means the VM ran out of memory", so check
+# /data/logs/web.log if chat never becomes available.
+#
+# On first launch, open Settings and paste an API key: the web server writes it
+# to /data/config/agent.json and restarts the agent with it (see
+# web/src/supervisor.ts), so nothing needs to be baked into the image.
+#
+# node_modules deliberately lives on the rootfs (/opt/paperagent), not on /data.
+# /data is the small persistent volume that carries user data across `heyvm
+# sync`; the Pi SDK's dependency tree does not fit there.
+
+# ── Build stage: compile the agent, the web server, and the frontend ──
+
+FROM node:22-bookworm-slim AS builder
+WORKDIR /build
+
+# Agent — deps first so source edits don't re-resolve the dependency tree.
+COPY agent/package.json agent/tsconfig.json ./agent/
+RUN cd agent && npm install --no-audit --no-fund
+COPY agent/src ./agent/src
+RUN cd agent && npx tsc && npm prune --omit=dev
+
+# Web server.
+COPY web/package.json web/tsconfig.json ./web/
+RUN cd web && npm install --no-audit --no-fund
+COPY web/src ./web/src
+RUN cd web && npx tsc
+
+# Frontend. `--mode web` swaps the Tauri IPC transport for the HTTP one and
+# emits into web/public, where the server looks for it.
+COPY package.json tsconfig.json tsconfig.node.json vite.config.ts index.html ./
+COPY public ./public
+COPY src ./src
+RUN npm install --no-audit --no-fund \
+    && npx tsc \
+    && npx vite build --mode web
+
+# Drop the web server's build-only deps now that everything is compiled.
+RUN cd web && npm prune --omit=dev
+
+# ── Runtime stage: a bootable Firecracker rootfs ──
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server \
+        iproute2 \
+        ca-certificates \
+        curl \
+        gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# SSH for `heyvm exec` / `heyvm sh`. Host keys are generated at build time —
+# Firecracker guests have little entropy at boot.
+RUN mkdir -p /run/sshd /etc/ssh/sshd_config.d \
+    && echo "PermitRootLogin yes" >> /etc/ssh/sshd_config \
+    && echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config \
+    && echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-heyo.conf \
+    && chmod 644 /etc/ssh/sshd_config.d/50-heyo.conf \
+    && passwd -d root \
+    && useradd -m -s /bin/bash heyo \
+    && echo 'heyo:heyo' | chpasswd \
+    && ssh-keygen -A
+
+RUN printf '%s\n' \
+    'PS1="\[\033[1;32m\]\h\[\033[0m\]:\[\033[1;34m\]\w\[\033[0m\]# "' \
+    'export HISTFILE=/root/.bash_history HISTSIZE=2000 HISTCONTROL=ignoredups' \
+    > /etc/profile.d/heyvm-prompt.sh
+
+# The application, on the rootfs.
+COPY --from=builder /build/agent/dist         /opt/paperagent/agent/dist
+COPY --from=builder /build/agent/node_modules /opt/paperagent/agent/node_modules
+COPY --from=builder /build/agent/package.json /opt/paperagent/agent/package.json
+COPY --from=builder /build/web/dist           /opt/paperagent/web/dist
+COPY --from=builder /build/web/node_modules   /opt/paperagent/web/node_modules
+COPY --from=builder /build/web/package.json   /opt/paperagent/web/package.json
+COPY --from=builder /build/web/public         /opt/paperagent/web/public
+
+# Mount points for the persistent data volume. Recreated at boot too, since a
+# fresh volume mounted over /data hides whatever the image put here.
+RUN mkdir -p /data/logs /data/storage /data/artifacts /data/config /data/pi
+
+# Boot script — PID 1, no systemd.
+RUN printf '#!/bin/sh\n\
+mount -t proc proc /proc\n\
+mount -t sysfs sysfs /sys\n\
+mount -t devtmpfs devtmpfs /dev 2>/dev/null\n\
+if [ ! -c /dev/null ]; then\n\
+    mknod -m 666 /dev/null    c 1 3\n\
+    mknod -m 666 /dev/zero    c 1 5\n\
+    mknod -m 444 /dev/random  c 1 8\n\
+    mknod -m 444 /dev/urandom c 1 9\n\
+    mknod -m 666 /dev/tty     c 5 0\n\
+    mknod -m 666 /dev/ptmx    c 5 2\n\
+    ln -sf /proc/self/fd /dev/fd\n\
+fi\n\
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts\n\
+dmesg -n 1 2>/dev/null\n\
+echo "nameserver 8.8.8.8" > /etc/resolv.conf\n\
+hostname paperagent\n\
+ip link set lo up 2>/dev/null\n\
+ip link set eth0 up 2>/dev/null\n\
+if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then\n\
+    for param in $(cat /proc/cmdline); do\n\
+        case "$param" in\n\
+            ip=*)\n\
+                GUEST_IP="${param#ip=}"; GUEST_IP="${GUEST_IP%%%%::*}"\n\
+                TAIL="${param#*::}"; GW="${TAIL%%%%:*}"\n\
+                ip addr add "$GUEST_IP/30" dev eth0 2>/dev/null\n\
+                [ -n "$GW" ] && ip route add default via "$GW" dev eth0 2>/dev/null\n\
+                ;;\n\
+        esac\n\
+    done\n\
+fi\n\
+mkdir -p /run/sshd\n\
+chown root:root /run/sshd\n\
+chmod 755 /run/sshd\n\
+chown root:root /etc/ssh/ssh_host_* 2>/dev/null\n\
+chmod 600 /etc/ssh/ssh_host_*_key 2>/dev/null\n\
+chmod 644 /etc/ssh/ssh_host_*_key.pub 2>/dev/null\n\
+/usr/sbin/sshd -D -e 2>/tmp/sshd.log &\n\
+# The data volume may be freshly formatted and mounted over /data.\n\
+mkdir -p /data/logs /data/storage /data/artifacts /data/config /data/pi\n\
+# The web server starts the agent itself (AGENT_SPAWN) so an API key saved in\n\
+# Settings can restart it with the new environment.\n\
+export PORT=3000\n\
+export AGENT_SPAWN=1\n\
+export AGENT_URL=http://127.0.0.1:8080\n\
+export AGENT_DIR=/opt/paperagent/agent\n\
+export TODO_DATA_DIR=/data\n\
+export TODO_LOG_FILE=/data/logs/agent.log\n\
+export WEB_PUBLIC_DIR=/opt/paperagent/web/public\n\
+export PI_CODING_AGENT_DIR=/data/pi\n\
+cd /opt/paperagent/web\n\
+nohup node dist/server.js >> /data/logs/web.log 2>&1 &\n\
+cd /\n\
+echo "HEYVM_READY"\n\
+# PID 1 must never exit (that panics the kernel), so respawn the console shell.\n\
+while :; do /bin/bash --login; sleep 0.1; done\n' > /init.sh \
+    && chmod +x /init.sh
+
+# 22 ssh · 3000 web UI · 8080 agent API (loopback-only in practice, but exposed
+# so `heyvm proxy` can reach it for debugging)
+EXPOSE 22 3000 8080
+
+CMD ["/init.sh"]

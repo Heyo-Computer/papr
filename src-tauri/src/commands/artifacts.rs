@@ -21,6 +21,32 @@ pub async fn read_artifact(path: String, state: State<'_, AppState>) -> Result<S
     agent_rpc(&url, "artifacts/read", serde_json::json!({ "path": path })).await
 }
 
+/// Materialize a VM-resident artifact to a host temp file and return its path,
+/// so the UI's "Open with default app" can hand a real host path to the OS
+/// opener. The artifact lives inside the sandbox at /data/artifacts and is not
+/// reachable from the host, so we pull its content over the read RPC and cache a
+/// local copy under <temp>/todo-artifacts/, preserving the basename (and thus the
+/// extension) so the OS picks the right application. `path` is the artifact's
+/// relative path.
+#[tauri::command]
+pub async fn open_artifact_external(path: String, state: State<'_, AppState>) -> Result<String, String> {
+    let url = require_agent(&state).await?;
+    let content: String = agent_rpc(&url, "artifacts/read", serde_json::json!({ "path": path })).await?;
+
+    // Safe basename from the relative path (guards against empty / trailing-slash).
+    let base = std::path::Path::new(&path)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "artifact".to_string());
+
+    let dir = std::env::temp_dir().join("todo-artifacts");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create temp dir: {}", e))?;
+    let file = dir.join(&base);
+    std::fs::write(&file, content).map_err(|e| format!("write temp artifact: {}", e))?;
+    Ok(file.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub async fn save_artifact(path: String, content: String, state: State<'_, AppState>) -> Result<Artifact, String> {
     let url = require_agent(&state).await?;

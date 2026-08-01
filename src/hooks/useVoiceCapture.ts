@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from "preact/hooks";
-import { transcribeFile } from "../api/commands";
-import { startRecording as micStart, stopRecording as micStop } from "tauri-plugin-mic-recorder-api";
+import { startRecording as micStart, stopAndTranscribe } from "../api/mic";
 
 export type CaptureState = "idle" | "recording" | "transcribing";
 
@@ -38,8 +37,7 @@ export function useVoiceCapture(onTranscription: (text: string) => void | Promis
     set("transcribing");
     setError("");
     try {
-      const filePath = await micStop();
-      const text = await transcribeFile(filePath);
+      const text = await stopAndTranscribe();
       set("idle");
       await onRef.current(text.trim());
     } catch (e) {

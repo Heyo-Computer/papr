@@ -12,3 +12,5 @@ pub mod lists;
 pub mod books;
 pub mod links;
 pub mod migration;
+pub mod plugins;
+pub mod pending;

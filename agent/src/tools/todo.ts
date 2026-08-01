@@ -194,7 +194,13 @@ export function updateTodoEntry(date: string, todo: TodoItem): DayEntry {
 }
 
 export function loadBacklog(): Backlog {
-  return loadBacklogFile();
+  // Completing a backlog item moves it onto a day's list and out of the backlog
+  // (see the frontend's handleToggle). A completed item left in backlog.json is
+  // therefore stale — drop it from the read path so it doesn't resurface in the
+  // backlog view after a restart. Writers use loadBacklogFile() and still see
+  // every item, so updates/moves/deletes are unaffected.
+  const backlog = loadBacklogFile();
+  return { items: backlog.items.filter((t) => !t.completed) };
 }
 
 export function addBacklogItem(title: string): Backlog {

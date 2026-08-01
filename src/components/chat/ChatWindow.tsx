@@ -1,5 +1,6 @@
 import { chatMessages, isAgentLoading, agentStatus, statusPopoverOpen } from "../../state/store";
 import { sendChatMessage } from "../../api/chat";
+import { abortMessage } from "../../api/commands";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 
@@ -9,6 +10,7 @@ export function ChatWindow({ heightPx }: { heightPx?: number | null }) {
   }
 
   const status = agentStatus.value;
+  const loading = isAgentLoading.value;
 
   // When the user has dragged the divider, drive the panel off an explicit
   // height and lift the default max-height cap so the drag can size it freely.
@@ -39,11 +41,20 @@ export function ChatWindow({ heightPx }: { heightPx?: number | null }) {
             Error &mdash; view status
           </button>
         )}
+        {loading && (
+          <button
+            class="btn btn-sm btn-ghost"
+            onClick={() => { void abortMessage(); }}
+            title="Stop the agent's current turn"
+          >
+            Stop
+          </button>
+        )}
       </div>
-      <MessageList messages={chatMessages.value} loading={isAgentLoading.value} />
+      <MessageList messages={chatMessages.value} loading={loading} />
       <ChatInput
         onSend={handleSend}
-        disabled={isAgentLoading.value}
+        disabled={loading}
       />
     </div>
   );

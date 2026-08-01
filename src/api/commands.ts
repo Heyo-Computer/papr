@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { DayEntry, TodoItem, AgentMessage, Artifact, Theme, AgentConfig, StatusInfo, CalendarConfig, CalendarStatus, CalendarEvent, DeploymentInfo, NetworkServiceInfo, Backlog, MoveBacklogResult, List, ListField, ListItem, ListSummary, Book, BookSummary, MigrationCounts, MigrationStatsResult, VmInfo } from "../types";
+import { invoke } from "./transport";
+import type { DayEntry, TodoItem, AgentMessage, Artifact, Theme, AgentConfig, StatusInfo, CalendarConfig, CalendarStatus, CalendarEvent, DeploymentInfo, NetworkServiceInfo, Backlog, MoveBacklogResult, List, ListField, ListItem, ListSummary, Book, BookSummary, MigrationCounts, MigrationStatsResult, VmInfo, PendingCreate, FlushResult } from "../types";
 
 // Storage commands
 export async function loadDay(date: string): Promise<DayEntry> {
@@ -173,6 +173,24 @@ export async function exportSandboxToLocal(): Promise<MigrationCounts> {
   return invoke("export_sandbox_to_local");
 }
 
+// Pending (offline dirty-save) creates — book/list creates queued while the
+// sandbox agent is offline, replayed when it reconnects.
+export async function listPendingCreates(): Promise<PendingCreate[]> {
+  return invoke("list_pending_creates");
+}
+
+export async function enqueuePendingCreate(entry: PendingCreate): Promise<PendingCreate[]> {
+  return invoke("enqueue_pending_create", { entry });
+}
+
+export async function removePendingCreate(localId: string): Promise<PendingCreate[]> {
+  return invoke("remove_pending_create", { localId });
+}
+
+export async function flushPendingCreates(): Promise<FlushResult> {
+  return invoke("flush_pending_creates");
+}
+
 // Theme commands
 export async function getTheme(): Promise<Theme> {
   return invoke("get_theme");
@@ -234,6 +252,17 @@ export async function sendMessage(message: string): Promise<AgentMessage> {
   return invoke("send_message", { message });
 }
 
+// Streaming chat: returns immediately; deltas/tool events/done arrive via the
+// `chat-stream` Tauri event (see src/api/events.ts), correlated by requestId.
+export async function sendMessageStreaming(message: string, requestId: string): Promise<void> {
+  return invoke("send_message_streaming", { message, requestId });
+}
+
+// Abort the in-flight streaming turn (leaves the agent running).
+export async function abortMessage(): Promise<void> {
+  return invoke("abort_message");
+}
+
 export async function getAgentStatus(): Promise<string> {
   return invoke("agent_status");
 }
@@ -254,6 +283,13 @@ export async function listAllArtifacts(): Promise<Artifact[]> {
 
 export async function readArtifact(path: string): Promise<string> {
   return invoke("read_artifact", { path });
+}
+
+// Materialize a VM-resident artifact to a host temp file (the artifact lives
+// inside the sandbox and isn't reachable from the host) and return its local
+// path, for handing to the OS opener. `path` is the artifact's relative path.
+export async function openArtifactExternal(path: string): Promise<string> {
+  return invoke("open_artifact_external", { path });
 }
 
 export async function saveArtifact(path: string, content: string): Promise<Artifact> {
